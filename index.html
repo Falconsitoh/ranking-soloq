@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SoloQ — NTI Esports</title>
+    <link rel="icon" type="image/png" href="yapi.png">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vanilla-tilt/1.8.1/vanilla-tilt.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+    <video autoplay loop muted playsinline id="sr-bg-video">
+        <source src="https://assets.contentstack.io/v3/assets/blt2ac872571a60ee02/blt7a72b1686eb3219a/618d75137ae6ce6fd1f98e4d/background-video-d-02.mp4" type="video/mp4">
+    </video>
+    <div id="sr-bg-overlay"></div>
+    <div id="toast-container" class="toast-container"></div>
+
+    <button id="exit-tv-btn" class="magnetic-btn" onclick="toggleGamingHouse()" style="display: none;">❌ SALIR MODO TV</button>
+
+    <div class="header-container">
+        <img src="yapi.png" class="header-logo" alt="NTI Esports" onerror="this.style.display='none'">
+        <h1 class="neon-title">RANKING SOLOQ LAN — NTI</h1>
+        <div class="header-sub">
+            <span id="ultima-actualizacion" class="update-text">Cargando...</span>
+            <button class="refresh-btn magnetic-btn" onclick="refrescarDatos()">
+                <span id="refresh-icon">↻</span> Actualizar
+            </button>
+        </div>
+    </div>
+
+    <div class="dashboard-widgets">
+        <div class="widget-box widget-challenge">
+            <div class="widget-icon-badge">🎯</div>
+            <div class="widget-title">Reto de la Semana</div>
+            <div class="challenge-desc" id="challenge-desc-text">50 Rankeds en Equipo</div>
+            <div class="progress-track">
+                <div class="progress-fill" id="team-challenge-bar" style="width:0%"><div class="progress-shine"></div></div>
+            </div>
+            <div class="challenge-footer"><span id="team-challenge-text">0 / 50</span><span id="challenge-pct">0%</span></div>
+        </div>
+
+        <div class="widget-box widget-team-today">
+            <div class="widget-icon-badge">⚡</div>
+            <div class="widget-title">Equipo Hoy</div>
+            <div class="today-stats-grid">
+                <div class="today-stat"><span class="today-val" id="team-wins-today">—</span><span class="today-lbl">Victorias</span></div>
+                <div class="today-divider"></div>
+                <div class="today-stat"><span class="today-val loss" id="team-losses-today">—</span><span class="today-lbl">Derrotas</span></div>
+                <div class="today-divider"></div>
+                <div class="today-stat"><span class="today-val gold" id="team-wr-today">—</span><span class="today-lbl">WR Team</span></div>
+            </div>
+        </div>
+
+        <div class="widget-box widget-play">
+            <div class="widget-icon-badge">🔥</div>
+            <div class="widget-title">Jugada de la Semana</div>
+            <a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" target="_blank" class="play-btn magnetic-btn">
+                <span class="play-icon">▶</span><span>Ver Clip Destacado</span>
+            </a>
+            <div class="play-hint">Haz clic para abrir en YouTube</div>
+        </div>
+
+        <div class="widget-box widget-controls">
+            <div class="widget-icon-badge">⚙️</div>
+            <div class="widget-title">Panel de Control</div>
+            <div class="controls-grid">
+                <button class="control-btn magnetic-btn" onclick="abrirModalComparar()" style="grid-column: span 2;"><span>⚖️</span><span>Frente a Frente</span></button>
+                <button class="control-btn magnetic-btn" onclick="toggleGamingHouse()"><span>📺</span><span>Modo TV</span></button>
+                <button class="control-btn magnetic-btn theme-toggle-btn" onclick="toggleTheme()"><span id="theme-icon">☀️</span><span>Tema</span></button>
+            </div>
+        </div>
+    </div>
+
+    <div class="performance-hub-wrapper" id="performance-hub-wrapper">
+        <div class="ph-container">
+            <div class="ph-side ph-senior">
+                <div class="ph-side-header sh-senior">
+                    <span class="sh-icon">💎</span> NTI Senior
+                </div>
+                <div class="ph-chart-container">
+                    <canvas id="hubChartSenior"></canvas>
+                </div>
+                <div class="ph-toggles-grid" id="ph-toggles-senior">
+                    </div>
+            </div>
+
+            <div class="ph-side ph-junior">
+                <div class="ph-side-header sh-junior">
+                    <span class="sh-icon">🔥</span> NTI JUNIOR
+                </div>
+                <div class="ph-chart-container">
+                    <canvas id="hubChartJunior"></canvas>
+                </div>
+                <div class="ph-toggles-grid" id="ph-toggles-junior">
+                    </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="trophy-podium" class="podium-container">
+        <div style="width: 100%; text-align: center; color: var(--text-muted); font-size: 0.8rem;">
+            ⏳ Recopilando estadísticas para el podio semanal...
+        </div>
+    </div>
+
+    <div class="cutoffs-container" id="cutoffs-container">
+        <div class="cutoff-card grandmaster" data-tilt data-tilt-glare data-tilt-max-glare="0.3" data-tilt-scale="1.05">
+            <img src="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/images/ranked-emblem/emblem-grandmaster.png" alt="GM">
+            <div class="cutoff-info"><span class="cutoff-title">Corte Grandmaster</span><span class="cutoff-lp counter-anim" id="cutoff-gm" data-val="0">0 LP</span></div>
+        </div>
+        <div class="cutoff-card challenger" data-tilt data-tilt-glare data-tilt-max-glare="0.3" data-tilt-scale="1.05">
+            <img src="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/images/ranked-emblem/emblem-challenger.png" alt="Challenger">
+            <div class="cutoff-info"><span class="cutoff-title">Corte Challenger</span><span class="cutoff-lp counter-anim" id="cutoff-cha" data-val="0">0 LP</span></div>
+        </div>
+    </div>
+
+    <div id="hero-section" class="hero-section"></div>
+    <div id="duoq-section" class="duoq-section"></div>
+
+    <div class="tactical-controls">
+        <div class="tabs-container">
+            <button class="tab activo-tab magnetic-btn" id="tab-all"    onclick="cambiarTab('all')">🌐 All NTI</button>
+            <button class="tab magnetic-btn"            id="tab-senior" onclick="cambiarTab('senior')">⭐ NTI Senior</button>
+            <button class="tab magnetic-btn"            id="tab-junior" onclick="cambiarTab('junior')">🌱 NTI Junior</button>
+        </div>
+        <div id="role-filters" class="role-filters"></div>
+        <div class="search-container">
+            <input type="text" id="search-input" placeholder="🔍 Buscar jugador..." onkeyup="filtrarTabla()">
+        </div>
+    </div>
+
+    <div class="table-wrapper">
+        <table class="main-table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Invocador</th>
+                    <th id="th-rango"   class="sortable" onclick="sortBy('rango')">Rango <span>↕</span></th>
+                    <th id="th-lp"      class="sortable" onclick="sortBy('pl')">LP <span>↕</span></th>
+                    <th id="th-estadisticas">Estadísticas W/L</th>
+                    <th id="th-nti"     class="sortable" onclick="sortBy('nti')">NTI <span>↕</span></th>
+                </tr>
+            </thead>
+            <tbody id="tabla-body"></tbody>
+        </table>
+    </div>
+
+    <footer class="footer">
+        <img src="yapi.png" style="width:28px;opacity:.5;margin-right:12px;" onerror="this.style.display='none'">
+        <span>NTI Esports © 2026 — Ranking SoloQ LAN</span>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:14px;">
+            <span class="footer-powered">Powered by Riot Games API & Node.js</span>
+        </div>
+    </footer>
+
+    <div id="modal-comparar" class="modal-overlay" onclick="closeModalOutside(event,'modal-comparar')">
+        <div class="modal-box compare-box-cinematic" id="compare-box-main">
+            <div class="split-bg split-p1" id="split-bg-p1"></div>
+            <div class="split-bg split-p2" id="split-bg-p2"></div>
+            <div class="lightning-clash" id="lightning-effect" style="display:none;">⚡</div>
+
+            <div class="compare-content-layer">
+                <div class="modal-icon" style="text-shadow: 0 0 20px #000;">⚖️</div>
+                <h2 style="text-shadow: 0 0 10px #000;">Frente a Frente</h2>
+                <p class="modal-desc" style="color:#fff; text-shadow: 0 0 10px #000;">Selecciona dos jugadores para el combate.</p>
+                
+                <div class="compare-selectors">
+                    <select id="p1-select" class="compare-select"><option value="">— Jugador 1 —</option></select>
+                    <div class="compare-vs-text">VS</div>
+                    <select id="p2-select" class="compare-select"><option value="">— Jugador 2 —</option></select>
+                </div>
+                
+                <button class="btn-guardar compare-go-btn magnetic-btn" onclick="ejecutarComparacion()">🔥 INICIAR COMBATE</button>
+                
+                <div id="compare-results" class="compare-results"></div>
+                <div id="compare-radar-container" style="width:100%; height:300px; display:none; margin-top:20px; background: rgba(0,0,0,0.6); border-radius: 12px; padding: 10px;">
+                    <canvas id="compRadar"></canvas>
+                </div>
+                
+                <button class="btn-cancelar magnetic-btn" onclick="cerrarModalComparar()" style="margin-top:20px; width:100%; background:rgba(0,0,0,0.8);">Abandonar Arena</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
