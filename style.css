@@ -299,6 +299,8 @@ body {
     max-width: 340px;
     animation: toastIn .4s cubic-bezier(.25, .8, .25, 1), toastOut .4s 4.6s forwards;
 }
+.toast.toast-win  { border-left-color: var(--win-color);  box-shadow: 0 12px 35px rgba(0,0,0,.7), 0 0 20px rgba(16,185,129,.2); }
+.toast.toast-loss { border-left-color: var(--loss-color); box-shadow: 0 12px 35px rgba(0,0,0,.7), 0 0 20px rgba(239,68,68,.2); }
 
 @keyframes toastIn {
     from { transform: translateX(110%); opacity: 0; }
@@ -2740,6 +2742,7 @@ body.gaming-house-mode td {
 
 /* ── 19. NTI PERFORMANCE HUB V2.1 ─────────────────────────── */
 .performance-hub-wrapper {
+    display: none !important;
     width: 95%;
     max-width: 1400px;
     margin-bottom: 30px;

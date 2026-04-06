@@ -133,8 +133,7 @@ var sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }
 function showToast(htmlMsg, type) {
     var c = document.getElementById('toast-container');
     var t = document.createElement('div');
-    t.className = 'toast';
-    t.style.borderLeftColor = type === 'win' ? 'var(--win-color)' : type === 'loss' ? 'var(--loss-color)' : 'var(--gold-main)';
+    t.className = 'toast' + (type === 'win' ? ' toast-win' : type === 'loss' ? ' toast-loss' : '');
     t.innerHTML = htmlMsg;
     c.appendChild(t);
     setTimeout(function() { if (t.parentNode) t.remove(); }, 5000);
@@ -325,7 +324,6 @@ function updateTrophyPodium() {
 // ── 7. NTI PERFORMANCE HUB V2.1 ──────────────────
 function toggleHubPlayer(nombre) {
     activePlayersHub[nombre] = !activePlayersHub[nombre];
-    renderPerformanceHub();
 }
 
 function processHubData(division) {
@@ -499,7 +497,6 @@ async function obtenerDatos() {
     if (datosGlobal.length > 0) {
         renderTabla();
         renderHeroSection();
-        renderPerformanceHub(); 
     } else {
         renderSkeleton();
     }
@@ -518,10 +515,26 @@ async function obtenerDatos() {
             console.error(`Fallo cargando a ${jug.name}.`);
             resultados.push({nombre: jug.name, division: jug.division, error: 'ERR'});
         }
-        await sleep(800); // ⏱️ Respiramos 0.8 segundos entre jugador y jugador (Máxima seguridad)
+        await sleep(400); // 0.4s entre jugadores - balance velocidad/rate-limit
     }
 
     var validPlayers = resultados.filter(function(j) { return !j.error; });
+
+    // TOASTS: Comparar con datos anteriores para notificar V/D y LP
+    resultados.forEach(function(nd) {
+        if (nd.error) return;
+        var od = datosGlobal.find(function(o){ return o.nombre === nd.nombre && !o.error; });
+        if (!od) return;
+        if (nd.victorias > od.victorias) {
+            var lpGain = nd.puntos - od.puntos;
+            var gainStr = lpGain >= 0 ? '+' + lpGain : '' + lpGain;
+            showToast('🏆 <strong>' + nd.nombre + '</strong> ganó una partida <span style="color:var(--win-color);font-weight:900;">' + gainStr + ' LP</span>', 'win');
+        } else if (nd.derrotas > od.derrotas) {
+            var lpLoss = nd.puntos - od.puntos;
+            var lossStr = lpLoss >= 0 ? '+' + lpLoss : '' + lpLoss;
+            showToast('💀 <strong>' + nd.nombre + '</strong> perdió una partida <span style="color:var(--loss-color);font-weight:900;">' + lossStr + ' LP</span>', 'loss');
+        }
+    });
 
     if (validPlayers.length > 0) {
         datosGlobal = resultados;
@@ -550,7 +563,6 @@ async function obtenerDatos() {
         renderDuoSection();
         updateChallenge();
         renderRoleFilters();
-        renderPerformanceHub(); 
     }
 }
 
@@ -794,7 +806,6 @@ async function cargarPanel(jugData) {
         renderDuoSection();
         renderRoleFilters();
         updateTrophyPodium();
-        renderPerformanceHub(); 
 
         if (panelActivo === jugData.nombre) renderPanel(jugData, matches);
     } catch (e) {
