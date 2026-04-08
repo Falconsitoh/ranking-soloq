@@ -7,6 +7,7 @@ const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 require('dotenv').config();
 
 const app  = express();
+// Solo declaramos el puerto una vez aquí arriba
 const PORT = process.env.PORT || 10000;
 
 app.use(cors());
@@ -27,7 +28,6 @@ client.once('ready', () => {
 
 client.login(DISCORD_TOKEN);
 
-// Ahora la función recibe directamente la tarjeta (Embed) armada
 async function enviarAlertaDiscord(embed) {
     try {
         const channel = await client.channels.fetch(DISCORD_CHANNEL_ID);
@@ -71,14 +71,13 @@ async function connectDB() {
         console.log('✅ BASE DE DATOS CONECTADA');
         
         actualizarDatosRiot(); 
-        setInterval(actualizarDatosRiot, 5 * 60 * 1000); // cada 5 min - suave para dev key 
+        setInterval(actualizarDatosRiot, 5 * 60 * 1000); 
     } catch (error) { console.error('❌ Error DB:', error); }
 }
 connectDB();
 
 // ── MOTOR DE ACTUALIZACIÓN CON ALERTAS PREMIUM ────────────────
 async function actualizarDatosRiot() {
-    // ciclo silencioso
     let startOfToday = Math.floor(new Date().setHours(0,0,0,0) / 1000);
 
     for (let jug of todosLosJugadores) {
@@ -94,14 +93,12 @@ async function actualizarDatosRiot() {
             const stats = leaRes.data.find(e => e.queueType === 'RANKED_SOLO_5x5') || { tier:'UNRANKED', rank:'', leaguePoints:0, wins:0, losses:0 };
             const nPartidasHoy = matchHoyRes.data.length;
 
-            // ── LÓGICA DE ALERTAS PARA DISCORD (MODO EMBED) ──
             const dataVieja = await jugadoresCollection.findOne({ nombre: jug.name });
             if (dataVieja) {
                 let isWin = false;
                 let isLoss = false;
                 let lpDiff = 0;
 
-                // Verificamos si hubo cambios en victorias o derrotas
                 if (stats.wins > dataVieja.victorias) {
                     isWin = true;
                     lpDiff = stats.leaguePoints - dataVieja.puntos;
@@ -116,10 +113,8 @@ async function actualizarDatosRiot() {
                     const totalGames = stats.wins + stats.losses;
                     const winrate = totalGames > 0 ? Math.round((stats.wins / totalGames) * 100) : 0;
                     
-                    // ¿Hubo cambio de liga? (ej. de PLATINUM I a EMERALD IV)
                     let rankChanged = (dataVieja.tier !== stats.tier || dataVieja.rango !== stats.rank) && dataVieja.tier && dataVieja.tier !== 'UNRANKED';
 
-                    // Construimos la tarjeta
                     const embed = new EmbedBuilder()
                         .setThumbnail(tierIcon)
                         .setTimestamp();
@@ -130,27 +125,26 @@ async function actualizarDatosRiot() {
                         if (rankChanged) {
                             embed.setTitle(`🚀 ¡ASCENSO ÉPICO DE ${jug.name}!`);
                             embed.setDescription(`¡Felicidades! Ha subido a una nueva liga y está imparable.`);
-                            embed.setColor(0xfcd34d); // Dorado Premium
+                            embed.setColor(0xfcd34d); 
                             lpFieldVal = '📈 **¡LIGA NUEVA!**';
                         } else {
                             embed.setTitle(`🏆 ¡Victoria de ${jug.name}!`);
-                            embed.setColor(0x10b981); // Verde victoria
+                            embed.setColor(0x10b981); 
                             lpFieldVal = `**+${Math.abs(lpDiff)} LP**`;
                         }
                     } else {
                         if (rankChanged) {
                             embed.setTitle(`🚑 ¡DESCENSO DE ${jug.name}!`);
                             embed.setDescription(`F en el chat... Ha bajado de liga. ¡Toca recuperar!`);
-                            embed.setColor(0x1a1a1a); // Negro descenso
+                            embed.setColor(0x1a1a1a); 
                             lpFieldVal = '📉 **¡BAJÓ DE LIGA!**';
                         } else {
                             embed.setTitle(`💀 Derrota de ${jug.name}...`);
-                            embed.setColor(0xef4444); // Rojo derrota
+                            embed.setColor(0xef4444); 
                             lpFieldVal = `**-${Math.abs(lpDiff)} LP**`;
                         }
                     }
 
-                    // Agregamos las columnas de información
                     embed.addFields(
                         { name: 'Cambio', value: lpFieldVal, inline: true },
                         { name: 'Elo Actual', value: `**${stats.tier} ${stats.rank}** (${stats.leaguePoints} LP)`, inline: true },
@@ -161,7 +155,6 @@ async function actualizarDatosRiot() {
                 }
             }
 
-            // Guardamos todo de nuevo en la base de datos
             await jugadoresCollection.updateOne(
                 { nombre: jug.name }, 
                 { $set: { 
@@ -175,7 +168,6 @@ async function actualizarDatosRiot() {
             await new Promise(r => setTimeout(r, 500));
         } catch (e) { console.error(`Error en ${jug.name}`); }
     }
-    // fin ciclo
 }
 
 // ── CACHÉ EN SERVIDOR (30 min) ──────────────────────────────
@@ -188,7 +180,6 @@ function getCached(key) {
     return e.data;
 }
 function setCache(key, data) { serverCache.set(key, { ts: Date.now(), data }); }
-// Limpiar entradas viejas cada hora
 setInterval(() => { const now = Date.now(); serverCache.forEach((v,k) => { if(now-v.ts>CACHE_TTL) serverCache.delete(k); }); }, 60*60*1000);
 
 // ── PROXY HACIA RIOT API con caché ────────────────────────────
@@ -201,7 +192,6 @@ app.use('/api/riot', async (req, res) => {
     const queryString = new URLSearchParams(req.query).toString();
     const url = `https://${region}.api.riotgames.com/${endpoint}${queryString ? '?' + queryString : ''}`;
     
-    // No cachear spectator (siempre fresco) ni challenger/gm (30 min está bien)
     const noCache = endpoint.includes('spectator') || endpoint.includes('active-games');
     if (!noCache) {
         const cached = getCached(url);
@@ -225,10 +215,14 @@ app.get('/api/ranking-actual', async (req, res) => {
     res.json(datos);
 });
 
-app.get('/', (req, res) => { res.sendFile(path.join(__dirname, 'index.html')); });
+// --- RUTA DE SUPERVIVENCIA PARA RENDER ---
+app.get('/', (req, res) => {
+    res.send('<h1>¡Servidor de NTI Esports encendido y funcionando al 100%! 🚀</h1><p>El backend y el bot están operativos.</p>');
+});
 
-app.listen(PORT, () => {
-    console.log('===================================');
+// ── INICIO DEL SERVIDOR ─────────────────────────────────────
+// Aquí usamos la constante PORT declarada al inicio y abrimos para todo internet con '0.0.0.0'
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Servidor NTI activo en puerto: ${PORT}`);
-    console.log('===================================');
+    console.log(`----------------------------------------`);
 });
