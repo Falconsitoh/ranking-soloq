@@ -1,9 +1,7 @@
 // ================================================================
-//  NTI ESPORTS — SoloQ Ranking  |  script.js (VERSIÓN DEFINITIVA)
+//  NTI ESPORTS — SoloQ Ranking  |  script.js (VERSIÓN OPTIMIZADA)
 // ================================================================
 
-// 🔥 PURGA DE CACHÉ DE EMERGENCIA 🔥
-// Borra la memoria corrupta de la sesión anterior que se quedó colgada
 localStorage.removeItem('nti_cache_datos');
 
 if ('serviceWorker' in navigator) {
@@ -39,7 +37,6 @@ function toggleTheme() {
     document.getElementById('theme-icon').textContent = next === 'dark' ? '☀️' : '🌙';
 }
 
-// ── 2. TEMA DINÁMICO Y HOVER SPLASH ───────────────────────────
 function applyDynamicTheme(champName) {
     var r = document.documentElement;
     r.style.setProperty('--panel-dyn', 'var(--gold-main)');
@@ -63,7 +60,7 @@ function resetPanelSplash(defaultChampId) {
 }
 
 // ── 3. NODE.JS Y ESTADO GLOBAL ────────────────────────────────
-var BACKEND_URL = '/api/riot'; // <-- ¡MAGIA! Al quitar localhost, buscará el server en la nube
+var BACKEND_URL = '/api/riot'; 
 var region = 'la1';
 var r_americas = 'americas';
 
@@ -79,7 +76,6 @@ var perkById = {};
 var itemById = {};
 
 var ROLES = { TOP: 'TOP', JUNGLE: 'JGL', MIDDLE: 'MID', BOTTOM: 'ADC', UTILITY: 'SUP', '': '?' };
-var ROLE_LABELS = { TOP: {emoji: '🛡️', label: 'Top'}, JUNGLE: {emoji: '🌿', label: 'Jungla'}, MIDDLE: {emoji: '⚡', label: 'Mid'}, BOTTOM: {emoji: '🏹', label: 'ADC'}, UTILITY: {emoji: '💚', label: 'Sup'} };
 var STAT_SHARD_NAMES = { 5001: 'HP x Nivel', 5002: 'Armadura', 5003: 'Res. Mágica', 5005: 'Vel. Ataque', 5007: 'Reducción CD', 5008: 'Poder Adaptativo', 5010: 'Vel. Movimiento', 5011: 'HP', 5013: 'Tenacidad', 5014: 'Vel. Ataque', 5021: 'HP Escudo', 5022: 'Tenacidad' };
 
 var jugadoresSenior = [
@@ -112,19 +108,12 @@ var radarChartInst = null;
 var lineChartInst = null;
 var compRadarInst = null;
 
-var hubChartSeniorInst = null;
-var hubChartJuniorInst = null;
-var activePlayersHub = {};
-const seniorColors = ['#3b82f6', '#8b5cf6', '#0ea5e9', '#6366f1', '#2dd4bf', '#0284c7', '#a855f7'];
-const juniorColors = ['#f97316', '#ef4444', '#f59e0b', '#84cc16', '#dc2626', '#10b981', '#f43f5e', '#d97706', '#84cc16'];
-
 var tabActiva = 'all';
 var sortEstado = {campo: 'rango', dir: 'desc'};
 var ultimaActualizacion = localStorage.getItem('nti_cache_time');
 var cargando = false;
 var panelActivo = null;
 var pinnedPlayer = localStorage.getItem('nti_pinned') || null;
-var roleFilter = null;
 var liveTimers = {};
 
 var sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
@@ -283,7 +272,7 @@ function updateTrophyPodium() {
     });
 
     if (statsList.length < 3) {
-        podium.innerHTML = `<div style="width: 100%; text-align: center; color: var(--text-muted); font-size: 0.8rem;">⏳ Explora los perfiles para recopilar las estadísticas del podio semanal...</div>`;
+        podium.innerHTML = `<div style="width: 100%; text-align: center; color: var(--text-muted); font-size: 0.8rem;">⏳ Haz clic en el perfil de los jugadores para analizar sus datos y armar el podio...</div>`;
         return;
     }
 
@@ -321,156 +310,28 @@ function updateTrophyPodium() {
         </div>`;
 }
 
-// ── 7. NTI PERFORMANCE HUB V2.1 ──────────────────
-function toggleHubPlayer(nombre) {
-    activePlayersHub[nombre] = !activePlayersHub[nombre];
-}
-
-function processHubData(division) {
-    var playersInDiv = datosGlobal.filter(function(j) { return !j.error && j.division === division && j.tier !== 'UNRANKED'; });
-    
-    playersInDiv.forEach(function(j) {
-        if (activePlayersHub[j.nombre] === undefined) { activePlayersHub[j.nombre] = true; }
-    });
-
-    var datasets = [];
-    var labels = ['Día -7', 'Día -6', 'Día -5', 'Día -4', 'Día -3', 'Día -2', 'HOY'];
-    var colorArray = division === 'senior' ? seniorColors : juniorColors;
-    var colorIndex = 0;
-
-    playersInDiv.forEach(function(jug) {
-        if (activePlayersHub[jug.nombre]) {
-            var hist = getLPHistory(jug.nombre);
-            var dataPoints = new Array(7).fill(null);
-            
-            if (hist && hist.length > 0) {
-                var recentHist = hist.slice(-7);
-                var startIndex = 7 - recentHist.length;
-                recentHist.forEach(function(h, i) {
-                    dataPoints[startIndex + i] = h.lp; 
-                });
-            }
-            if (dataPoints.every(x => x === null)) { dataPoints[6] = jug.puntos; }
-
-            var color = colorArray[colorIndex % colorArray.length];
-
-            datasets.push({
-                label: jug.nombre,
-                data: dataPoints,
-                borderColor: color,
-                backgroundColor: color + '33',
-                pointBackgroundColor: '#fff',
-                pointBorderColor: color,
-                pointRadius: 5,
-                pointHoverRadius: 8,
-                borderWidth: 3,
-                tension: 0.4, 
-                spanGaps: true 
-            });
+// ── 7. CORTES DE LIGA ────────────────────
+async function cargarCutoffsLigas() {
+    try {
+        var gmRes = await fetchRiot(region, 'lol/league/v4/grandmasterleagues/by-queue/RANKED_SOLO_5x5');
+        var chRes = await fetchRiot(region, 'lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5');
+        
+        if (gmRes && gmRes.entries) {
+            var gmArr = gmRes.entries.map(function(x) { return x.leaguePoints; }).sort(function(a,b){return b-a;});
+            var gmLp = gmArr[gmArr.length - 1] || 0;
+            var el = document.getElementById('cutoff-gm');
+            if (el) { el.setAttribute('data-val', gmLp); el.classList.add('counter-anim'); }
         }
-        colorIndex++;
-    });
-
-    return { datasets, labels, playersInDiv, colorArray };
-}
-
-function renderPerformanceHub() {
-    var hubWrapper = document.getElementById('performance-hub-wrapper');
-    if (!hubWrapper || datosGlobal.length === 0) return;
-
-    var seniorData = processHubData('senior');
-    var juniorData = processHubData('junior');
-
-    var togglesSeniorEl = document.getElementById('ph-toggles-senior');
-    var htmlSenior = '';
-    var colorIdxS = 0;
-    seniorData.playersInDiv.forEach(function(j) {
-        var isActive = activePlayersHub[j.nombre];
-        var color = seniorData.colorArray[colorIdxS % seniorData.colorArray.length];
-        var safeName = j.nombre.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-        htmlSenior += `
-        <div class="ph-player-btn ${isActive ? 'active' : 'inactive'}" onclick="toggleHubPlayer('${safeName}')">
-            <img class="ph-player-icon" src="https://ddragon.leagueoflegends.com/cdn/${versionDD}/img/profileicon/${j.icono}.png">
-            <div class="ph-player-info">
-                <span class="ph-p-name">${j.nombre}</span>
-                <span class="ph-p-rank">${j.tier} ${j.rango}</span>
-            </div>
-            <span class="ph-status">${isActive ? '✓' : '✕'}</span>
-            <div class="ph-line-color" style="background:${color};"></div>
-        </div>`;
-        colorIdxS++;
-    });
-    if(togglesSeniorEl) togglesSeniorEl.innerHTML = htmlSenior;
-
-    var togglesJuniorEl = document.getElementById('ph-toggles-junior');
-    var htmlJunior = '';
-    var colorIdxJ = 0;
-    juniorData.playersInDiv.forEach(function(j) {
-        var isActive = activePlayersHub[j.nombre];
-        var color = juniorData.colorArray[colorIdxJ % juniorData.colorArray.length];
-        var safeName = j.nombre.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-        htmlJunior += `
-        <div class="ph-player-btn ${isActive ? 'active' : 'inactive'}" onclick="toggleHubPlayer('${safeName}')">
-            <img class="ph-player-icon" src="https://ddragon.leagueoflegends.com/cdn/${versionDD}/img/profileicon/${j.icono}.png">
-            <div class="ph-player-info">
-                <span class="ph-p-name">${j.nombre}</span>
-                <span class="ph-p-rank">${j.tier} ${j.rango}</span>
-            </div>
-            <span class="ph-status">${isActive ? '✓' : '✕'}</span>
-            <div class="ph-line-color" style="background:${color};"></div>
-        </div>`;
-        colorIdxJ++;
-    });
-    if(togglesJuniorEl) togglesJuniorEl.innerHTML = htmlJunior;
-
-    Chart.defaults.color = '#8b97a7';
-    Chart.defaults.font.family = "'Segoe UI', Tahoma, sans-serif";
-    
-    var commonOptions = {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-            legend: { display: false }, 
-            tooltip: {
-                backgroundColor: 'rgba(5, 11, 20, 0.9)',
-                titleFont: { size: 14, weight: 'bold' },
-                bodyFont: { size: 13 },
-                padding: 12,
-                borderColor: 'var(--border-glow)',
-                borderWidth: 1,
-                usePointStyle: true,
-                boxPadding: 6
-            }
-        },
-        scales: {
-            y: { grid: { color: 'rgba(255,255,255,0.05)' }, beginAtZero: false, ticks: { font: { size: 12 } } },
-            x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { font: { size: 11 } } }
+        if (chRes && chRes.entries) {
+            var chArr = chRes.entries.map(function(x) { return x.leaguePoints; }).sort(function(a,b){return b-a;});
+            var chLp = chArr[chArr.length - 1] || 0;
+            var el = document.getElementById('cutoff-cha');
+            if (el) { el.setAttribute('data-val', chLp); el.classList.add('counter-anim'); }
         }
-    };
-
-    var ctxSenior = document.getElementById('hubChartSenior');
-    if (ctxSenior) {
-        if (hubChartSeniorInst) hubChartSeniorInst.destroy();
-        hubChartSeniorInst = new Chart(ctxSenior.getContext('2d'), {
-            type: 'line',
-            data: { labels: seniorData.labels, datasets: seniorData.datasets },
-            options: commonOptions
-        });
-    }
-
-    var ctxJunior = document.getElementById('hubChartJunior');
-    if (ctxJunior) {
-        if (hubChartJuniorInst) hubChartJuniorInst.destroy();
-        hubChartJuniorInst = new Chart(ctxJunior.getContext('2d'), {
-            type: 'line',
-            data: { labels: juniorData.labels, datasets: juniorData.datasets },
-            options: commonOptions
-        });
-    }
+    } catch (e) { console.error("Error cargando cortes:", e); }
 }
 
-// ── 8. OBTENER DATOS (PARCHE ANTI-RATE LIMIT Y ERRORES) ────────
+// ── 8. OBTENER DATOS (Carga Rápida Optimizada) ────────
 function renderSkeleton() {
     var t = document.getElementById('tabla-body');
     var h = '';
@@ -494,75 +355,54 @@ async function obtenerDatos() {
     var btn = document.querySelector('.refresh-btn');
     if (btn) btn.classList.add('girando');
 
-    if (datosGlobal.length > 0) {
-        renderTabla();
-        renderHeroSection();
-    } else {
-        renderSkeleton();
-    }
+    if (datosGlobal.length === 0) renderSkeleton();
     cargarCutoffsLigas();
 
-    var resultados = [];
-    
-    // ⚠️ CARGA SEGURA 1 POR 1 ⚠️
-    // Riot castiga duramente el exceso de peticiones. Consultamos a 1 jugador a la vez.
-    for (var i = 0; i < todosLosJugadores.length; i++) {
-        var jug = todosLosJugadores[i];
-        try {
-            var nd = await fetchJugador(jug);
-            resultados.push(nd);
-        } catch (e) {
-            console.error(`Fallo cargando a ${jug.name}.`);
-            resultados.push({nombre: jug.name, division: jug.division, error: 'ERR'});
-        }
-        await sleep(400); // 0.4s entre jugadores - balance velocidad/rate-limit
-    }
+    try {
+        var res = await fetch('/api/ranking-actual');
+        var resultados = await res.json();
 
-    var validPlayers = resultados.filter(function(j) { return !j.error; });
+        if (resultados.error) throw new Error(resultados.error);
 
-    // TOASTS: Comparar con datos anteriores para notificar V/D y LP
-    resultados.forEach(function(nd) {
-        if (nd.error) return;
-        var od = datosGlobal.find(function(o){ return o.nombre === nd.nombre && !o.error; });
-        if (!od) return;
-        if (nd.victorias > od.victorias) {
-            var lpGain = nd.puntos - od.puntos;
-            var gainStr = lpGain >= 0 ? '+' + lpGain : '' + lpGain;
-            showToast('🏆 <strong>' + nd.nombre + '</strong> ganó una partida <span style="color:var(--win-color);font-weight:900;">' + gainStr + ' LP</span>', 'win');
-        } else if (nd.derrotas > od.derrotas) {
-            var lpLoss = nd.puntos - od.puntos;
-            var lossStr = lpLoss >= 0 ? '+' + lpLoss : '' + lpLoss;
-            showToast('💀 <strong>' + nd.nombre + '</strong> perdió una partida <span style="color:var(--loss-color);font-weight:900;">' + lossStr + ' LP</span>', 'loss');
-        }
-    });
+        resultados.forEach(function(nd) {
+            var od = datosGlobal.find(function(o){ return o.nombre === nd.nombre; });
+            if (!od) return;
+            if (nd.victorias > od.victorias) {
+                var lpGain = nd.puntos - od.puntos;
+                showToast('🏆 <strong>' + nd.nombre + '</strong> ganó <span style="color:var(--win-color);font-weight:900;">' + (lpGain>=0?'+':'') + lpGain + ' LP</span>', 'win');
+            } else if (nd.derrotas > od.derrotas) {
+                var lpLoss = nd.puntos - od.puntos;
+                showToast('💀 <strong>' + nd.nombre + '</strong> perdió <span style="color:var(--loss-color);font-weight:900;">' + (lpLoss>=0?'+':'') + lpLoss + ' LP</span>', 'loss');
+            }
+        });
 
-    if (validPlayers.length > 0) {
         datosGlobal = resultados;
         localStorage.setItem('nti_cache_datos', JSON.stringify(datosGlobal));
         localStorage.setItem('nti_cache_time', Date.now());
-        
+
         var todayStr = new Date().toDateString();
         if (localStorage.getItem('nti_last_rank_save') !== todayStr) {
-            var sorted = [...datosGlobal].filter(function(j) { return !j.error; }).sort(function(a, b) { return (b.valorT - a.valorT) || (b.puntos - a.puntos); });
+            var sorted = [...datosGlobal].sort(function(a, b) { return (b.valorT - a.valorT) || (b.puntos - a.puntos); });
             sorted.forEach(function(j, idx) { localStorage.setItem('nti_rank_' + j.nombre, idx); });
             localStorage.setItem('nti_last_rank_save', todayStr);
         }
-    } else {
-        console.warn("⚠️ Riot bloqueó todas las peticiones o la llave caducó.");
-        document.getElementById('tabla-body').innerHTML = `<tr><td colspan="6" style="color:var(--loss-color); padding:30px; font-weight: bold;">Error al conectar con los servidores de Riot. Verifica la consola del backend.</td></tr>`;
+
+    } catch (e) {
+        console.error("Error obteniendo datos:", e);
+        if (datosGlobal.length === 0) {
+            document.getElementById('tabla-body').innerHTML = `<tr><td colspan="6" style="color:var(--loss-color); padding:30px; font-weight: bold;">Cargando base de datos...</td></tr>`;
+        }
     }
 
     if (btn) btn.classList.remove('girando');
     actualizarTimer();
     cargando = false;
     
-    // Solo renderizamos si tenemos datos, para no chocar
-    if (validPlayers.length > 0) {
+    if (datosGlobal.length > 0) {
         filtrarTabla();
         renderHeroSection();
-        renderDuoSection();
+        updateTrophyPodium();
         updateChallenge();
-        renderRoleFilters();
     }
 }
 
@@ -604,7 +444,6 @@ function renderTabla() {
     var filtrados = datosGlobal;
     if (tabActiva !== 'all') filtrados = filtrados.filter(function(j) { return j.division === tabActiva; });
     if (searchVal) filtrados = filtrados.filter(function(j) { return j.nombre.toLowerCase().includes(searchVal); });
-    if (roleFilter) filtrados = filtrados.filter(function(j) { return getRoleForPlayer(j.nombre) === roleFilter; });
 
     var validos = filtrados.filter(function(j) { return !j.error; });
     validos.sort(function(a, b) {
@@ -632,7 +471,7 @@ function renderTabla() {
         var delta = getLPDelta(j.nombre);
         var deltaH = delta !== null ? `<span class="lp-delta ${delta >= 0 ? 'lp-delta-up' : 'lp-delta-down'}">${delta >= 0 ? '+' : ''}${delta}</span>` : '';
         var sparkH = renderSparkline(j.nombre);
-        var dotsH = cacheHistorial[j.nombre] ? renderMatchDots(j.puuid, cacheHistorial[j.nombre]) : '';
+        
         var isPinned = pinnedPlayer === j.nombre;
 
         var liveH = '';
@@ -722,7 +561,6 @@ function renderTabla() {
                         <div class="permanent-vd-nums"><span class="victorias-text">${j.victorias}V</span> / <span class="derrotas-text">${j.derrotas}D</span></div>
                         <div class="permanent-wr ${wrClass}">${wr}% Winrate</div>
                         <div class="total-games">${total} Partidas</div>
-                        ${dotsH}
                     </div>
                 </td>
                 
@@ -789,9 +627,15 @@ function cerrarPanel() {
 
 async function cargarPanel(jugData) {
     try {
-        var ids = await fetchRiot(r_americas, `lol/match/v5/matches/by-puuid/${jugData.puuid}/ids?queue=420&count=10`);
         var s1 = document.getElementById('pl-step-1');
         var s2 = document.getElementById('pl-step-2');
+        
+        if (cacheHistorial[jugData.nombre]) {
+            renderPanel(jugData, cacheHistorial[jugData.nombre]);
+            return;
+        }
+
+        var ids = await fetchRiot(r_americas, `lol/match/v5/matches/by-puuid/${jugData.puuid}/ids?queue=420&count=10`);
         if (s1) { s1.className = 'pl-step done'; s1.innerHTML = '✓ Historial descargado'; }
         if (s2) { s2.className = 'pl-step active'; }
 
@@ -803,14 +647,12 @@ async function cargarPanel(jugData) {
 
         cacheHistorial[jugData.nombre] = matches;
         renderTabla();
-        renderDuoSection();
-        renderRoleFilters();
-        updateTrophyPodium();
+        updateTrophyPodium(); // Actualiza el podio si se desbloqueó un jugador que merece estar ahí
 
         if (panelActivo === jugData.nombre) renderPanel(jugData, matches);
     } catch (e) {
         var p = document.getElementById('panel-inner');
-        if (p) p.innerHTML = `<div style="color:var(--loss-color);padding:30px;text-align:center;font-weight:700;">⚠️ Error conectando al servidor backend. Verifica tu conexión a Node.js.</div>`;
+        if (p) p.innerHTML = `<div style="color:var(--loss-color);padding:30px;text-align:center;font-weight:700;">⚠️ Error conectando a Riot API. Por favor, intenta de nuevo.</div>`;
     }
 }
 
@@ -1295,61 +1137,6 @@ initStaticData().then(function() {
     obtenerDatos();
     iniciarTimer();
 });
-// ================================================================
-//  FUNCIONES RESTAURADAS (faltaban del build anterior)
-// ================================================================
-
-// ── FETCH JUGADOR ─────────────────────────────────────────────
-async function fetchJugador(jug) {
-    var dataAcc = await fetchRiot(r_americas, 'riot/account/v1/accounts/by-riot-id/' + encodeURIComponent(jug.name) + '/' + jug.tag);
-    var startOfToday = Math.floor(new Date().setHours(0,0,0,0) / 1000);
-
-    var [resSum, resLea, resMatchHoy, resSpec] = await Promise.all([
-        fetchRiot(region,     'lol/summoner/v4/summoners/by-puuid/' + dataAcc.puuid),
-        fetchRiot(region,     'lol/league/v4/entries/by-puuid/' + dataAcc.puuid),
-        fetchRiot(r_americas, 'lol/match/v5/matches/by-puuid/' + dataAcc.puuid + '/ids?startTime=' + startOfToday + '&queue=420&count=100').catch(function(){return [];}),
-        fetchRiot(region,     'lol/spectator/v5/active-games/by-puuid/' + dataAcc.puuid).catch(function(){return null;})
-    ]);
-
-    var stats = resLea.find(function(e){ return e.queueType === 'RANKED_SOLO_5x5'; }) || { tier:'UNRANKED', rank:'', leaguePoints:0, wins:0, losses:0 };
-    saveLPSnapshot(jug.name, stats.leaguePoints, stats.tier);
-
-    // Si está en partida, obtener qué campeón juega
-    var liveChampId = null;
-    if (resSpec && resSpec.gameQueueConfigId === 420) {
-        var me = resSpec.participants ? resSpec.participants.find(function(p){ return p.puuid === dataAcc.puuid; }) : null;
-        if (me) liveChampId = me.championId;
-    }
-
-    return {
-        nombre:      jug.name,
-        division:    jug.division,
-        puuid:       dataAcc.puuid,
-        icono:       resSum.profileIconId,
-        tier:        stats.tier,
-        rango:       stats.rank,
-        puntos:      stats.leaguePoints,
-        victorias:   stats.wins,
-        derrotas:    stats.losses,
-        valorT:      valoresTier[stats.tier] !== undefined ? valoresTier[stats.tier] : -1,
-        partidasHoy: Array.isArray(resMatchHoy) ? resMatchHoy.length : 0,
-        isInGame:    !!(resSpec && resSpec.gameQueueConfigId === 420),
-        liveChampId: liveChampId
-    };
-}
-
-// ── CUTOFFS GM / CHALL ────────────────────────────────────────
-async function cargarCutoffsLigas() {
-    try {
-        var cha = await fetchRiot(region, 'lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5');
-        var gm  = await fetchRiot(region, 'lol/league/v4/grandmasterleagues/by-queue/RANKED_SOLO_5x5');
-        var gmEl  = document.getElementById('cutoff-gm');
-        var chaEl = document.getElementById('cutoff-cha');
-        if (gmEl)  { gmEl.setAttribute('data-val',  gm.entries.map(function(e){return e.leaguePoints;}).sort(function(a,b){return a-b;})[0]||0);  gmEl.setAttribute('data-suffix',' LP');  gmEl.classList.add('counter-anim'); }
-        if (chaEl) { chaEl.setAttribute('data-val', cha.entries.map(function(e){return e.leaguePoints;}).sort(function(a,b){return a-b;})[0]||0); chaEl.setAttribute('data-suffix',' LP'); chaEl.classList.add('counter-anim'); }
-        triggerCounters();
-    } catch(e) {}
-}
 
 // ── HERO SECTION ──────────────────────────────────────────────
 async function renderHeroSection() {
@@ -1403,105 +1190,12 @@ async function renderHeroSection() {
     hero.innerHTML = h;
 }
 
-// ── DUOQ ──────────────────────────────────────────────────────
-function calcDuoStats() {
-    var ntiPuuids = {};
-    datosGlobal.forEach(function(j){ if(j.puuid) ntiPuuids[j.puuid]=j.nombre; });
-    var duoMap = {};
-    Object.keys(cacheHistorial).forEach(function(nombre){
-        var matches = cacheHistorial[nombre];
-        var jug = datosGlobal.find(function(j){ return j.nombre===nombre; }); if(!jug || !jug.puuid) return;
-        matches.forEach(function(m){
-            var me = m.info.participants.find(function(p){ return p.puuid===jug.puuid; }); if(!me) return;
-            m.info.participants.forEach(function(p){
-                if(p.puuid===jug.puuid||!ntiPuuids[p.puuid]||p.teamId!==me.teamId) return;
-                var key=[nombre,ntiPuuids[p.puuid]].sort().join('|||');
-                if(!duoMap[key]) duoMap[key]={games:0,wins:0,names:[nombre,ntiPuuids[p.puuid]]};
-                duoMap[key].games++; if(me.win) duoMap[key].wins++;
-            });
-        });
-    });
-    return Object.values(duoMap).map(function(d){ return Object.assign({},d,{games:Math.ceil(d.games/2),wins:Math.ceil(d.wins/2)}); })
-        .filter(function(d){ return d.games>=2; }).sort(function(a,b){ return b.games-a.games; });
-}
-
-function renderDuoSection() {
-    var sec = document.getElementById('duoq-section'); if(!sec) return;
-    var duos = calcDuoStats(); if(!duos.length){ sec.innerHTML=''; return; }
-    var h='<div class="duoq-title">⚔️ Sinergias NTI — Mejores Dúos de la Semana</div><div class="duoq-cards">';
-    duos.slice(0,3).forEach(function(d,i){
-        var wr=Math.round((d.wins/d.games)*100), wrC=wr>=50?'wr-verde':'wr-rojo';
-        var medal=['🥇','🥈','🥉'][i]||'';
-        var j1=datosGlobal.find(function(j){ return j.nombre===d.names[0]; });
-        var j2=datosGlobal.find(function(j){ return j.nombre===d.names[1]; });
-        h+='<div class="duoq-card"><div class="duoq-medal">'+medal+'</div><div class="duoq-avatars">'+
-            (j1?'<img class="duoq-avatar" src="https://ddragon.leagueoflegends.com/cdn/'+versionDD+'/img/profileicon/'+j1.icono+'.png">':'')+
-            '<span class="duoq-plus">+</span>'+
-            (j2?'<img class="duoq-avatar" src="https://ddragon.leagueoflegends.com/cdn/'+versionDD+'/img/profileicon/'+j2.icono+'.png">':'')+
-            '</div><div class="duoq-names">'+d.names[0]+' & '+d.names[1]+'</div>'+
-            '<div class="duoq-stats"><span class="'+wrC+' duoq-wr">'+wr+'% WR</span><span class="duoq-games">'+d.games+' partidas juntos</span></div></div>';
-    });
-    h+='</div>'; sec.innerHTML=h;
-}
-
-// ── NÉMESIS ───────────────────────────────────────────────────
-function calcNemesis(puuid, matches) {
-    var lv={};
-    matches.forEach(function(m){
-        var me=m.info.participants.find(function(p){ return p.puuid===puuid; }); if(!me||me.win) return;
-        m.info.participants.filter(function(p){ return p.teamId!==me.teamId; }).forEach(function(e){ lv[e.championId]=(lv[e.championId]||0)+1; });
-    });
-    var sorted=Object.entries(lv).sort(function(a,b){ return b[1]-a[1]; });
-    if(!sorted.length||sorted[0][1]<2) return null;
-    var champId=sorted[0][0], count=sorted[0][1];
-    var ci=champByKey[parseInt(champId)];
-    return { name:ci?ci.name:'?', id:ci?ci.id:'Aatrox', losses:count };
-}
-
-// ── PIN + ROL ─────────────────────────────────────────────────
+// ── PIN ─────────────────────────────────────────────────
 function togglePin(nombre, e) {
     e.stopPropagation();
     pinnedPlayer = pinnedPlayer===nombre ? null : nombre;
     pinnedPlayer ? localStorage.setItem('nti_pinned',nombre) : localStorage.removeItem('nti_pinned');
     renderTabla();
-}
-
-function getRoleForPlayer(nombre) {
-    var matches=cacheHistorial[nombre]; if(!matches||!matches.length) return null;
-    var jug=datosGlobal.find(function(j){ return j.nombre===nombre; }); if(!jug||!jug.puuid) return null;
-    var roles={};
-    matches.forEach(function(m){ var me=m.info.participants.find(function(p){ return p.puuid===jug.puuid; }); if(me&&me.teamPosition) roles[me.teamPosition]=(roles[me.teamPosition]||0)+1; });
-    var top=Object.entries(roles).sort(function(a,b){ return b[1]-a[1]; })[0];
-    return top ? top[0] : null;
-}
-
-function setRoleFilter(role) {
-    roleFilter=role;
-    renderRoleFilters();
-    renderTabla();
-}
-
-function renderRoleFilters() {
-    var c=document.getElementById('role-filters'); if(!c) return;
-    var hasData=datosGlobal.some(function(j){ return getRoleForPlayer(j.nombre); });
-    if(!hasData){ c.className='role-filters'; c.innerHTML=''; return; }
-    c.className='role-filters visible';
-    var h='<button class="role-btn'+((!roleFilter)?' role-active':'')+'" onclick="setRoleFilter(null)">🌐 Todos</button>';
-    ['TOP','JUNGLE','MIDDLE','BOTTOM','UTILITY'].forEach(function(r){
-        var rl=ROLE_LABELS[r];
-        h+='<button class="role-btn'+(roleFilter===r?' role-active':'')+'" onclick="setRoleFilter(\''+r+'\')">'+rl.emoji+' '+rl.label+'</button>';
-    });
-    c.innerHTML=h;
-}
-
-// ── MATCH DOTS ────────────────────────────────────────────────
-function renderMatchDots(puuid, matches) {
-    if(!matches||!matches.length) return '';
-    return '<div class="match-dots">'+matches.slice(0,10).map(function(m){
-        var me=m.info.participants.find(function(p){ return p.puuid===puuid; });
-        var cls=me?(me.win?'mdot-win':'mdot-loss'):'mdot-none';
-        return '<span class="mdot '+cls+'" title="'+(me?(me.win?'Victoria':'Derrota'):'?')+'"></span>';
-    }).join('')+'</div>';
 }
 
 // ── GAMING HOUSE ──────────────────────────────────────────────
@@ -1554,9 +1248,4 @@ async function generateShareCard(nombre) {
     [{l:'PARTIDAS',v:''+tot,c:'#f0e6d2'},{l:'WINRATE',v:wr+'%',c:wr>=50?'#10b981':'#ef4444'},{l:'NTI SCORE',v:''+ntiS,c:ntiScoreColor(ntiS)}].forEach(function(st,idx){ var x=148+idx*155; ctx.font='bold 24px Segoe UI'; ctx.fillStyle=st.c; ctx.fillText(st.v,x,132); ctx.font='9px Segoe UI'; ctx.fillStyle='#6b7280'; ctx.fillText(st.l,x,148); });
     var link=document.createElement('a'); link.download=nombre.replace(/\s/g,'_')+'_NTI_Card.png'; link.href=cnv.toDataURL('image/png'); link.click();
     showToast('✅ ¡Player Card descargada!','win');
-}
-
-// ── DESREGISTRAR SW ANTIGUO ───────────────────────────────────
-if('serviceWorker' in navigator){
-    navigator.serviceWorker.getRegistrations().then(function(regs){ regs.forEach(function(reg){ reg.unregister(); }); });
 }
