@@ -71,14 +71,14 @@ async function connectDB() {
         console.log('✅ BASE DE DATOS CONECTADA');
         
         actualizarDatosRiot(); 
-        setInterval(actualizarDatosRiot, 3 * 60 * 1000); 
+        setInterval(actualizarDatosRiot, 5 * 60 * 1000); // cada 5 min - suave para dev key 
     } catch (error) { console.error('❌ Error DB:', error); }
 }
 connectDB();
 
 // ── MOTOR DE ACTUALIZACIÓN CON ALERTAS PREMIUM ────────────────
 async function actualizarDatosRiot() {
-    console.log('⏳ Actualizando datos y verificando rachas...');
+    // ciclo silencioso
     let startOfToday = Math.floor(new Date().setHours(0,0,0,0) / 1000);
 
     for (let jug of todosLosJugadores) {
@@ -175,10 +175,23 @@ async function actualizarDatosRiot() {
             await new Promise(r => setTimeout(r, 500));
         } catch (e) { console.error(`Error en ${jug.name}`); }
     }
-    console.log('✅ Ciclo completado.');
+    // fin ciclo
 }
 
-// ── PROXY HACIA RIOT API (El puente) ────────────
+// ── CACHÉ EN SERVIDOR (30 min) ──────────────────────────────
+const serverCache = new Map();
+const CACHE_TTL = 30 * 60 * 1000;
+function getCached(key) {
+    const e = serverCache.get(key);
+    if (!e) return null;
+    if (Date.now() - e.ts > CACHE_TTL) { serverCache.delete(key); return null; }
+    return e.data;
+}
+function setCache(key, data) { serverCache.set(key, { ts: Date.now(), data }); }
+// Limpiar entradas viejas cada hora
+setInterval(() => { const now = Date.now(); serverCache.forEach((v,k) => { if(now-v.ts>CACHE_TTL) serverCache.delete(k); }); }, 60*60*1000);
+
+// ── PROXY HACIA RIOT API con caché ────────────────────────────
 app.use('/api/riot', async (req, res) => {
     const parts = req.path.split('/').filter(Boolean);
     const region = parts[0];
@@ -187,12 +200,22 @@ app.use('/api/riot', async (req, res) => {
 
     const queryString = new URLSearchParams(req.query).toString();
     const url = `https://${region}.api.riotgames.com/${endpoint}${queryString ? '?' + queryString : ''}`;
+    
+    // No cachear spectator (siempre fresco) ni challenger/gm (30 min está bien)
+    const noCache = endpoint.includes('spectator') || endpoint.includes('active-games');
+    if (!noCache) {
+        const cached = getCached(url);
+        if (cached) return res.json(cached);
+    }
 
     try {
         const response = await axios.get(url, { headers: { 'X-Riot-Token': RIOT_API_KEY }, timeout: 8000 });
+        if (!noCache) setCache(url, response.data);
         res.json(response.data);
     } catch (error) {
-        res.status(error.response ? error.response.status : 500).json({ error: 'Error Riot API' });
+        const status = error.response ? error.response.status : 500;
+        if (status !== 403 && status !== 404) console.error(`[NTI] Riot ${status}: ${endpoint.split('?')[0]}`);
+        res.status(status).json({ error: 'Error Riot API' });
     }
 });
 
