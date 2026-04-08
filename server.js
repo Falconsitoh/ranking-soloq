@@ -11,7 +11,7 @@ const app  = express();
 const PORT = process.env.PORT || 10000;
 
 app.use(cors());
-app.use(express.static(__dirname));
+app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
 const RIOT_API_KEY = process.env.RIOT_API_KEY;
