@@ -27,7 +27,7 @@ client.once('ready', () => {
     console.log(`🤖 BOT DISCORD EN LÍNEA: Conectado como ${client.user.tag}`);
 });
 
-client.login(DISCORD_TOKEN);
+if (DISCORD_TOKEN) { client.login(DISCORD_TOKEN); } else { console.log('[NTI] Discord no configurado — bot desactivado'); }
 
 async function enviarAlertaDiscord(embed) {
     try {
@@ -63,6 +63,30 @@ const jugadoresJunior = [
 ];
 const todosLosJugadores = [...jugadoresSenior, ...jugadoresJunior];
 
+
+// ── RESET PARTIDAS HOY a medianoche LAN (00:00 UTC-5 = 05:00 UTC) ──────────
+function programarResetHoy() {
+    const LAN_OFFSET_MS = 5 * 60 * 60 * 1000;
+    const nowUTC = Date.now();
+    const nowLAN = new Date(nowUTC - LAN_OFFSET_MS);
+    // Siguiente medianoche LAN
+    const nextMidnightLAN = new Date(nowLAN.getUTCFullYear(), nowLAN.getUTCMonth(), nowLAN.getUTCDate() + 1, 0, 0, 0, 0);
+    const msHastaMedianoche = (nextMidnightLAN.getTime() + LAN_OFFSET_MS) - nowUTC;
+    
+    setTimeout(async function() {
+        // Resetear contadores de hoy en MongoDB
+        if (jugadoresCollection) {
+            await jugadoresCollection.updateMany({}, { $set: { partidasHoy: 0 } });
+            console.log('[NTI] ✅ Partidas de hoy reseteadas a medianoche LAN');
+        }
+        programarResetHoy(); // Reprogramar para el día siguiente
+    }, msHastaMedianoche);
+    
+    const horas = Math.floor(msHastaMedianoche / 3600000);
+    const mins  = Math.floor((msHastaMedianoche % 3600000) / 60000);
+    console.log(`[NTI] Reset de hoy programado en ${horas}h ${mins}m`);
+}
+
 async function connectDB() {
     try {
         const mongoClient = new MongoClient(MONGO_URI);
@@ -70,6 +94,7 @@ async function connectDB() {
         db = mongoClient.db('NTI_Esports');
         jugadoresCollection = db.collection('tabla_clasificacion');
         console.log('✅ BASE DE DATOS CONECTADA');
+        programarResetHoy(); // Iniciar reset automático de partidas del día
         
         actualizarDatosRiot(); 
         setInterval(actualizarDatosRiot, 5 * 60 * 1000); 
@@ -79,7 +104,12 @@ connectDB();
 
 // ── MOTOR DE ACTUALIZACIÓN ────────────────
 async function actualizarDatosRiot() {
-    let startOfToday = Math.floor(new Date().setHours(0,0,0,0) / 1000);
+    // LAN = UTC-5 (Colombia, Ecuador, Perú)
+    // Calculamos medianoche en UTC-5, no en UTC del servidor
+    const LAN_OFFSET_MS = 5 * 60 * 60 * 1000; // 5 horas en ms
+    const nowLAN = new Date(Date.now() - LAN_OFFSET_MS);
+    const midnightLAN = new Date(nowLAN.getUTCFullYear(), nowLAN.getUTCMonth(), nowLAN.getUTCDate(), 0, 0, 0, 0);
+    let startOfToday = Math.floor((midnightLAN.getTime() + LAN_OFFSET_MS) / 1000);
     for (let jug of todosLosJugadores) {
         try {
             const accRes = await axios.get(`https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(jug.name)}/${jug.tag}`, { headers: { 'X-Riot-Token': RIOT_API_KEY }});
@@ -139,12 +169,109 @@ app.use('/api/riot', async (req, res) => {
     } catch (error) { res.status(error.response?.status || 500).json({ error: 'Error Riot API' }); }
 });
 
+
+// ── NTI SCORE (pre-calculado en servidor) ────────────────────
+function calcNTIScoreServer(jug) {
+    var valoresTier = {'CHALLENGER':9,'GRANDMASTER':8,'MASTER':7,'DIAMOND':6,'EMERALD':5,'PLATINUM':4,'GOLD':3,'SILVER':2,'BRONZE':1,'IRON':0,'UNRANKED':-1};
+    var tv = valoresTier[jug.tier] !== undefined ? valoresTier[jug.tier] : -1;
+    var lpNorm = Math.min((Math.max(tv,0)/9)*85 + (jug.puntos/100)*15, 100);
+    var total = (jug.victorias||0) + (jug.derrotas||0);
+    var wr    = total > 0 ? (jug.victorias/total)*100 : 50;
+    return Math.min(Math.round(lpNorm*0.4 + wr*0.3 + wr*0.3), 100);
+}
+
+// ── ENDPOINT: /api/ranking-actual (con NTI Score pre-calculado) ──
+// Guarda snapshot de LP diario para cada jugador (sparkline)
+async function guardarLPSnapshot(nombre, lp, tier) {
+    try {
+        const today = new Date().toDateString();
+        await db.collection('lp_history').updateOne(
+            { nombre, fecha: today },
+            { $set: { nombre, fecha: today, lp, tier, ts: new Date() } },
+            { upsert: true }
+        );
+    } catch(e) {}
+}
+
 app.get('/api/ranking-actual', async (req, res) => {
-    const datos = await jugadoresCollection.find({}).toArray();
-    res.json(datos);
+    try {
+        const datos = await jugadoresCollection.find({}).toArray();
+        // Pre-calcular NTI Score y guardar LP snapshot en cada consulta
+        const LAN_OFFSET_MS = 5 * 60 * 60 * 1000;
+        const nowLAN = new Date(Date.now() - LAN_OFFSET_MS);
+        const todayLAN = nowLAN.toUTCString().slice(0, 16); // "Tue, 01 Apr 2025"
+        
+        const enriched = datos.map(j => {
+            // Si la última actualización fue ayer (en LAN), resetear partidasHoy a 0
+            let partidasHoyLimpio = j.partidasHoy || 0;
+            if (j.ultimaActualizacion) {
+                const updLAN = new Date(new Date(j.ultimaActualizacion).getTime() - LAN_OFFSET_MS);
+                const updDay = updLAN.toUTCString().slice(0, 16);
+                if (updDay !== todayLAN) partidasHoyLimpio = 0;
+            }
+            return {
+                ...j,
+                partidasHoy: partidasHoyLimpio,
+                ntiScore:  calcNTIScoreServer(j),
+                valorT:    {'CHALLENGER':9,'GRANDMASTER':8,'MASTER':7,'DIAMOND':6,'EMERALD':5,'PLATINUM':4,'GOLD':3,'SILVER':2,'BRONZE':1,'IRON':0,'UNRANKED':-1}[j.tier] ?? -1
+            };
+        });
+        // Guardar snapshots en background (no bloquea la respuesta)
+        enriched.forEach(j => { if (j.tier && j.puntos !== undefined) guardarLPSnapshot(j.nombre, j.puntos, j.tier); });
+        res.json(enriched);
+    } catch(e) {
+        res.status(500).json({ error: 'Error leyendo base de datos' });
+    }
 });
 
+// ── ENDPOINT: Hall of Fame (top 3 históricos) ─────────────────
+app.get('/api/hall-of-fame', async (req, res) => {
+    try {
+        const hof = db.collection('hall_of_fame');
+        const entries = await hof.find({}).sort({ ts: -1 }).limit(9).toArray();
+        res.json(entries);
+    } catch(e) { res.json([]); }
+});
+
+// ── ENDPOINT: Guardar campeón del mes (llamado desde server interno) ──
+async function archivarCampeonDelMes() {
+    if (!db) return;
+    try {
+        const datos = await jugadoresCollection.find({}).toArray();
+        if (!datos.length) return;
+        const valoresTier = {'CHALLENGER':9,'GRANDMASTER':8,'MASTER':7,'DIAMOND':6,'EMERALD':5,'PLATINUM':4,'GOLD':3,'SILVER':2,'BRONZE':1,'IRON':0,'UNRANKED':-1};
+        const top3 = datos
+            .filter(j => j.tier && j.tier !== 'UNRANKED')
+            .sort((a,b) => ((valoresTier[b.tier]||0)-(valoresTier[a.tier]||0)) || (b.puntos-a.puntos))
+            .slice(0, 3);
+        const now = new Date();
+        const mes = now.toLocaleDateString('es-MX', { month:'long', year:'numeric' });
+        const hof = db.collection('hall_of_fame');
+        for (const j of top3) {
+            await hof.insertOne({
+                nombre: j.nombre, tier: j.tier, rango: j.rango,
+                puntos: j.puntos, icono: j.icono, mes, ts: now
+            });
+        }
+        console.log('[NTI] Hall of Fame archivado para:', mes);
+    } catch(e) { console.error('[NTI] Error archivando HOF:', e.message); }
+}
+// Archivar automáticamente el día 1 de cada mes a medianoche
+(function() {
+    const now = new Date();
+    const next1st = new Date(now.getFullYear(), now.getMonth()+1, 1, 0, 5, 0);
+    setTimeout(function tick() {
+        archivarCampeonDelMes();
+        setTimeout(tick, 30*24*60*60*1000);
+    }, next1st - now);
+})();
+
+
 // --- RUTA DE SUPERVIVENCIA ---
+app.get('/manifest.json', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'manifest.json'));
+});
+
 app.get('/', (req, res) => {
     res.send('<h1>¡Servidor de NTI Esports operativo! 🚀</h1><p>Si ves esto, el backend está vivo.</p>');
 });
