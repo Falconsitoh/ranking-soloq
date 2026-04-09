@@ -8,6 +8,23 @@
     <link rel="stylesheet" href="style.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/vanilla-tilt/1.8.1/vanilla-tilt.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- SEO + Discord/WhatsApp embed -->
+    <meta name="description" content="Ranking SoloQ LAN en tiempo real de NTI Esports. Consulta LP, winrate, NTI Score y estadísticas de todos nuestros jugadores Senior y Junior.">
+    <meta property="og:type"        content="website">
+    <meta property="og:site_name"   content="NTI Esports">
+    <meta property="og:title"       content="🎮 NTI Esports — Ranking SoloQ LAN">
+    <meta property="og:description" content="Ranking SoloQ LAN en tiempo real. LP, Winrate, NTI Score y más de todos los jugadores NTI.">
+    <meta property="og:image"       content="https://soloq-nti-esports.onrender.com/yapi.png">
+    <meta property="og:url"         content="https://soloq-nti-esports.onrender.com">
+    <meta name="twitter:card"       content="summary_large_image">
+    <meta name="twitter:title"      content="NTI Esports — Ranking SoloQ">
+    <meta name="twitter:image"      content="https://soloq-nti-esports.onrender.com/yapi.png">
+    <!-- PWA -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#050b14">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="NTI SoloQ">
 </head>
 <body>
 
@@ -80,6 +97,8 @@
         </div>
     </div>
 
+    <div id="hof-section"></div>
+
     <div class="cutoffs-container" id="cutoffs-container">
         <div class="cutoff-card grandmaster" data-tilt data-tilt-glare data-tilt-max-glare="0.3" data-tilt-scale="1.05">
             <img src="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/images/ranked-emblem/emblem-grandmaster.png" alt="GM">
@@ -98,7 +117,6 @@
             <button class="tab activo-tab magnetic-btn" id="tab-all"    onclick="cambiarTab('all')">🌐 All NTI</button>
             <button class="tab magnetic-btn"            id="tab-senior" onclick="cambiarTab('senior')">⭐ NTI Senior</button>
             <button class="tab magnetic-btn"            id="tab-junior" onclick="cambiarTab('junior')">🌱 NTI Junior</button>
-            <button class="tab magnetic-btn tab-scrims" id="tab-scrims" onclick="cambiarTab('scrims')">⚔️ NTI Scrims</button>
         </div>
         <div class="search-container">
             <input type="text" id="search-input" placeholder="🔍 Buscar jugador..." onkeyup="filtrarTabla()">

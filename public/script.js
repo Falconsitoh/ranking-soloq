@@ -365,19 +365,35 @@ async function obtenerDatos() {
 
         if (resultados.error) throw new Error(resultados.error);
 
-        resultados.forEach(function(nd) {
-            var od = datosGlobal.find(function(o){ return o.nombre === nd.nombre; });
-            if (!od) return;
-            if (nd.victorias > od.victorias) {
-                var lpGain = nd.puntos - od.puntos;
-                showToast('🏆 <strong>' + nd.nombre + '</strong> ganó <span style="color:var(--win-color);font-weight:900;">' + (lpGain>=0?'+':'') + lpGain + ' LP</span>', 'win');
-            } else if (nd.derrotas > od.derrotas) {
-                var lpLoss = nd.puntos - od.puntos;
-                showToast('💀 <strong>' + nd.nombre + '</strong> perdió <span style="color:var(--loss-color);font-weight:900;">' + (lpLoss>=0?'+':'') + lpLoss + ' LP</span>', 'loss');
-            }
-        });
+        // Solo notificar si ya teníamos datos previos (no en la primera carga)
+        if (datosGlobal.length > 0) {
+            resultados.forEach(function(nd) {
+                if (nd.error) return;
+                var od = datosGlobal.find(function(o){ return o.nombre === nd.nombre && !o.error; });
+                if (!od) return;
+                if (nd.victorias > od.victorias) {
+                    var lpGain = nd.puntos - od.puntos;
+                    showToast('🏆 <strong>' + nd.nombre + '</strong> ganó<br><span style="color:var(--win-color);font-weight:900;font-size:1.1em;">' + (lpGain>=0?'+':'') + lpGain + ' LP</span> · ' + nd.tier + ' ' + nd.rango, 'win');
+                } else if (nd.derrotas > od.derrotas) {
+                    var lpLoss = nd.puntos - od.puntos;
+                    showToast('💀 <strong>' + nd.nombre + '</strong> perdió<br><span style="color:var(--loss-color);font-weight:900;font-size:1.1em;">' + (lpLoss>=0?'+':'') + lpLoss + ' LP</span> · ' + nd.tier + ' ' + nd.rango, 'loss');
+                }
+            });
+        }
 
         datosGlobal = resultados;
+        // GUARDAR LP SNAPSHOT para sparkline y delta (+/- LP)
+        datosGlobal.forEach(function(j) {
+            if (!j.error && j.tier && j.puntos !== undefined) {
+                // Solo guardar si los LP cambiaron respecto al último snapshot
+                var hist = getLPHistory(j.nombre);
+                var ultimo = hist.length ? hist[hist.length - 1] : null;
+                var today  = new Date().toDateString();
+                if (!ultimo || ultimo.date !== today || ultimo.lp !== j.puntos) {
+                    saveLPSnapshot(j.nombre, j.puntos, j.tier);
+                }
+            }
+        });
         localStorage.setItem('nti_cache_datos', JSON.stringify(datosGlobal));
         localStorage.setItem('nti_cache_time', Date.now());
 
@@ -404,6 +420,7 @@ async function obtenerDatos() {
         renderHeroSection();
         updateTrophyPodium();
         updateChallenge();
+        cargarHallOfFame();
     }
 }
 
@@ -459,7 +476,8 @@ function renderTabla() {
         if (pi > 0) { var p = validos.splice(pi, 1)[0]; validos.unshift(p); }
     }
 
-    Object.values(liveTimers).forEach(clearInterval);
+    // Limpiar todos los timers activos antes de re-renderizar
+    Object.keys(liveTimers).forEach(function(k) { clearInterval(liveTimers[k]); });
     liveTimers = {};
     tabla.innerHTML = '';
 
@@ -533,7 +551,8 @@ function renderTabla() {
 
         if (isPenta) rowClass = 'row-pentakill';
 
-        var ntiScore = calcNTIScore(j);
+        // Preferir ntiScore del servidor (pre-calculado) para no saturar el cliente
+        var ntiScore = (j.ntiScore !== undefined) ? j.ntiScore : calcNTIScore(j);
         var ntiColor = ntiScoreColor(ntiScore);
         var isOpen = panelActivo === j.nombre;
         var nameSafe = j.nombre.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -550,7 +569,7 @@ function renderTabla() {
                                 <button class="pin-star ${isPinned ? 'pinned' : ''}" data-name="${nameSafe}" onclick="togglePin(this.getAttribute('data-name'), event)" title="${isPinned ? 'Desfijar' : 'Fijar arriba'}">${isPinned ? '⭐' : '☆'}</button>
                             </div>
                             ${dynamicTitle}
-                            <div class="achievements">${badges}<span class="partidas-hoy-badge">🎮 Hoy: ${j.partidasHoy}</span></div>
+                            <div class="achievements">${badges}${getBadgesAdicionales(j)}<span class="partidas-hoy-badge">🎮 Hoy: ${j.partidasHoy}</span></div>
                         </div>
                     </div>
                 </td>
@@ -1097,224 +1116,13 @@ function iniciarTimer() {
 }
 
 
-// ══════════════════════════════════════════════════════════════
-//  SISTEMA DE SCRIMS (Partidas Personalizadas NTI Senior)
-// ══════════════════════════════════════════════════════════════
-
-// Scrims guardados en localStorage (estructura: [{fecha, resultado, equipoA, equipoB, mvp, notas}])
-var KEY_SCRIMS = 'nti_scrims_v1';
-
-function getScrimsData() {
-    return JSON.parse(localStorage.getItem(KEY_SCRIMS) || '[]');
-}
-
-function saveScrim(scrim) {
-    var data = getScrimsData();
-    data.unshift(scrim); // más recientes primero
-    if (data.length > 50) data = data.slice(0, 50); // máx 50
-    localStorage.setItem(KEY_SCRIMS, JSON.stringify(data));
-}
-
-function renderScrimsTab() {
-    // Tabla principal: ocultar, mostrar sección scrims
-    var tableW = document.querySelector('.table-wrapper');
-    var heroS  = document.getElementById('hero-section');
-    if (tableW) tableW.style.display = 'none';
-    if (heroS)  heroS.style.display  = 'none';
-
-    var container = document.getElementById('scrims-container');
-    if (!container) {
-        container = document.createElement('div');
-        container.id = 'scrims-container';
-        container.className = 'scrims-container';
-        var tableWrapper = document.querySelector('.table-wrapper');
-        tableWrapper.parentNode.insertBefore(container, tableWrapper);
-    }
-    container.style.display = 'block';
-    _renderScrimsHTML(container);
-}
-
-function hideScrims() {
-    var container = document.getElementById('scrims-container');
-    if (container) container.style.display = 'none';
-    var tableW = document.querySelector('.table-wrapper');
-    var heroS  = document.getElementById('hero-section');
-    if (tableW) tableW.style.display = '';
-    if (heroS)  heroS.style.display  = '';
-}
-
-function _renderScrimsHTML(container) {
-    var data = getScrimsData();
-    var seniorPlayers = datosGlobal.filter(function(j){ return j.division === 'senior' && !j.error; });
-
-    // Stats por jugador
-    var stats = {};
-    seniorPlayers.forEach(function(j){ stats[j.nombre] = { w:0, l:0, mvp:0 }; });
-    data.forEach(function(sc) {
-        if (!sc.equipoA || !sc.equipoB) return;
-        sc.equipoA.forEach(function(n){ if(stats[n]) { sc.resultado==='A' ? stats[n].w++ : stats[n].l++; } });
-        sc.equipoB.forEach(function(n){ if(stats[n]) { sc.resultado==='B' ? stats[n].w++ : stats[n].l++; } });
-        if (sc.mvp && stats[sc.mvp]) stats[sc.mvp].mvp++;
-    });
-
-    var statsRows = seniorPlayers.map(function(j) {
-        var st = stats[j.nombre] || {w:0,l:0,mvp:0};
-        var tot = st.w + st.l;
-        var wr  = tot > 0 ? Math.round((st.w/tot)*100) : 0;
-        return '<tr class="scrim-stat-row">' +
-            '<td style="text-align:left;padding-left:20px;display:flex;align-items:center;gap:10px;">' +
-            '<img src="https://ddragon.leagueoflegends.com/cdn/' + versionDD + '/img/profileicon/' + j.icono + '.png" style="width:32px;height:32px;border-radius:50%;border:2px solid var(--gold-accent)">' +
-            '<strong>' + j.nombre + '</strong></td>' +
-            '<td style="color:var(--win-color);font-weight:800;">' + st.w + '</td>' +
-            '<td style="color:var(--loss-color);font-weight:800;">' + st.l + '</td>' +
-            '<td style="font-weight:900;color:' + (wr>=50?'var(--win-color)':'var(--loss-color)') + '">' + (tot>0?wr+'%':'—') + '</td>' +
-            '<td>' + (st.mvp > 0 ? '<span style="color:var(--gold-main)">⭐ ×' + st.mvp + '</span>' : '—') + '</td>' +
-            '</tr>';
-    }).join('');
-
-    var scrimsRows = data.length === 0
-        ? '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:30px;">Sin scrims registrados aún. ¡Agrega el primero!</td></tr>'
-        : data.map(function(sc, idx) {
-            var won  = sc.resultado === 'A' ? '🏆' : '';
-            var lost = sc.resultado === 'B' ? '🏆' : '';
-            var a = (sc.equipoA||[]).join(', ');
-            var b = (sc.equipoB||[]).join(', ');
-            return '<tr class="scrim-hist-row">' +
-                '<td style="color:var(--text-muted);font-size:.8rem;">' + (sc.fecha||'—') + '</td>' +
-                '<td style="text-align:left;">' + won + ' <span style="color:' + (sc.resultado==='A'?'var(--win-color)':'var(--text-main)') + '">' + a + '</span></td>' +
-                '<td style="font-weight:900;color:#ef4444;">VS</td>' +
-                '<td style="text-align:left;">' + lost + ' <span style="color:' + (sc.resultado==='B'?'var(--win-color)':'var(--text-main)') + '">' + b + '</span></td>' +
-                '<td>' + (sc.mvp ? '<span style="color:var(--gold-main)">⭐ ' + sc.mvp + '</span>' : '—') + ' ' +
-                '<button onclick="eliminarScrim(' + idx + ')" style="background:none;border:none;cursor:pointer;color:var(--loss-color);font-size:.8rem;" title="Eliminar">✕</button></td>' +
-                '</tr>';
-          }).join('');
-
-    // Opciones para selects
-    var playerOpts = seniorPlayers.map(function(j){
-        return '<option value="' + j.nombre + '">' + j.nombre + '</option>';
-    }).join('');
-
-    container.innerHTML =
-        '<div class="scrims-header">' +
-        '<div class="scrims-title">⚔️ NTI Scrims — Registro de Partidas Personalizadas</div>' +
-        '<div class="scrims-subtitle">Solo jugadores NTI Senior · Guardado local en el navegador</div>' +
-        '</div>' +
-
-        // Tabla de stats
-        '<div class="scrims-section">' +
-        '<div class="scrims-section-title">📊 Estadísticas en Scrims</div>' +
-        '<table class="scrims-table">' +
-        '<thead><tr><th style="text-align:left;padding-left:20px;">Jugador</th><th>Victorias</th><th>Derrotas</th><th>WR Scrims</th><th>MVP</th></tr></thead>' +
-        '<tbody>' + statsRows + '</tbody>' +
-        '</table></div>' +
-
-        // Agregar nuevo scrim
-        '<div class="scrims-section scrims-add-form">' +
-        '<div class="scrims-section-title">➕ Registrar Nuevo Scrim</div>' +
-        '<div class="scrims-form-grid">' +
-
-        '<div class="scrims-form-col">' +
-        '<label class="scrims-label">Equipo A (ganador 🏆 si marcas A)</label>' +
-        '<select id="sc-a1" class="scrim-select">' + playerOpts + '</select>' +
-        '<select id="sc-a2" class="scrim-select">' + playerOpts + '</select>' +
-        '<select id="sc-a3" class="scrim-select"><option value="">— Opcional —</option>' + playerOpts + '</select>' +
-        '</div>' +
-
-        '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;">' +
-        '<div style="font-size:1.6rem;font-weight:900;color:#ef4444;">VS</div>' +
-        '<div class="scrims-resultado-btns">' +
-        '<button class="scrim-resultado-btn scrim-win-btn" id="sc-res-A" onclick="selectScrimRes(&quot;A&quot;)" title="Gana Equipo A">A GANA</button>' +
-        '<button class="scrim-resultado-btn scrim-lose-btn" id="sc-res-B" onclick="selectScrimRes(&quot;B&quot;)" title="Gana Equipo B">B GANA</button>' +
-        '</div></div>' +
-
-        '<div class="scrims-form-col">' +
-        '<label class="scrims-label">Equipo B</label>' +
-        '<select id="sc-b1" class="scrim-select">' + playerOpts + '</select>' +
-        '<select id="sc-b2" class="scrim-select">' + playerOpts + '</select>' +
-        '<select id="sc-b3" class="scrim-select"><option value="">— Opcional —</option>' + playerOpts + '</select>' +
-        '</div>' +
-
-        '</div>' +
-        '<div style="display:flex;gap:14px;margin-top:14px;flex-wrap:wrap;align-items:center;">' +
-        '<div><label class="scrims-label">MVP</label>' +
-        '<select id="sc-mvp" class="scrim-select"><option value="">— Sin MVP —</option>' + playerOpts + '</select></div>' +
-        '<div style="flex:1;"><label class="scrims-label">Notas (opcional)</label>' +
-        '<input type="text" id="sc-notas" class="scrim-input" placeholder="Ej: Segunda partida del día, mapa Summoners Rift..."></div>' +
-        '<button class="scrim-save-btn" onclick="guardarScrim()">💾 Guardar Scrim</button>' +
-        '</div></div>' +
-
-        // Historial
-        '<div class="scrims-section">' +
-        '<div class="scrims-section-title">📜 Historial de Scrims</div>' +
-        '<table class="scrims-table">' +
-        '<thead><tr><th>Fecha</th><th>Equipo A</th><th style="width:50px;">—</th><th>Equipo B</th><th>MVP / Acción</th></tr></thead>' +
-        '<tbody>' + scrimsRows + '</tbody>' +
-        '</table></div>';
-}
-
-var _scrimResSelected = null;
-function selectScrimRes(lado) {
-    _scrimResSelected = lado;
-    document.getElementById('sc-res-A').style.opacity = (lado==='A') ? '1' : '0.4';
-    document.getElementById('sc-res-B').style.opacity = (lado==='B') ? '1' : '0.4';
-    document.getElementById('sc-res-A').style.transform = (lado==='A') ? 'scale(1.05)' : '';
-    document.getElementById('sc-res-B').style.transform = (lado==='B') ? 'scale(1.05)' : '';
-}
-
-function guardarScrim() {
-    if (!_scrimResSelected) { showToast('⚠️ Selecciona quién ganó (A o B)', ''); return; }
-    var a1 = document.getElementById('sc-a1')?.value;
-    var a2 = document.getElementById('sc-a2')?.value;
-    var a3 = document.getElementById('sc-a3')?.value;
-    var b1 = document.getElementById('sc-b1')?.value;
-    var b2 = document.getElementById('sc-b2')?.value;
-    var b3 = document.getElementById('sc-b3')?.value;
-    var mvp    = document.getElementById('sc-mvp')?.value || '';
-    var notas  = document.getElementById('sc-notas')?.value || '';
-
-    var equipoA = [a1, a2, a3].filter(function(x){ return x && x !== ''; });
-    var equipoB = [b1, b2, b3].filter(function(x){ return x && x !== ''; });
-    if (equipoA.length < 1 || equipoB.length < 1) { showToast('⚠️ Cada equipo necesita al menos 1 jugador', ''); return; }
-
-    var scrim = {
-        fecha:     new Date().toLocaleDateString('es-MX', {day:'2-digit',month:'2-digit',year:'numeric'}),
-        equipoA:   equipoA,
-        equipoB:   equipoB,
-        resultado: _scrimResSelected,
-        mvp:       mvp,
-        notas:     notas,
-        ts:        Date.now()
-    };
-    saveScrim(scrim);
-    _scrimResSelected = null;
-    showToast('✅ ¡Scrim registrado!', 'win');
-    var container = document.getElementById('scrims-container');
-    if (container) _renderScrimsHTML(container);
-}
-
-function eliminarScrim(idx) {
-    if (!confirm('¿Eliminar este scrim?')) return;
-    var data = getScrimsData();
-    data.splice(idx, 1);
-    localStorage.setItem(KEY_SCRIMS, JSON.stringify(data));
-    var container = document.getElementById('scrims-container');
-    if (container) _renderScrimsHTML(container);
-}
-
-// Ocultar scrims al cambiar de tab a cualquier otro
-var _origCambiarTab = cambiarTab;
 function cambiarTab(t) {
     tabActiva = t;
     document.querySelectorAll('.tab').forEach(function(x) { x.classList.remove('activo-tab'); });
     document.getElementById('tab-' + t).classList.add('activo-tab');
     cerrarPanel();
-    if (t === 'scrims') {
-        renderScrimsTab();
-    } else {
-        hideScrims();
-        renderHeroSection();
-        renderTabla();
-    }
+    renderHeroSection();
+    renderTabla();
 }
 
 function sortBy(campo) {
@@ -1328,7 +1136,11 @@ function sortBy(campo) {
 // ── FETCH JUGADOR ─────────────────────────────────────────────
 async function fetchJugador(jug) {
     var dataAcc = await fetchRiot(r_americas, 'riot/account/v1/accounts/by-riot-id/' + encodeURIComponent(jug.name) + '/' + jug.tag);
-    var startOfToday = Math.floor(new Date().setHours(0,0,0,0) / 1000);
+    // Medianoche LAN (UTC-5) para contar partidas del día correctamente
+    var LAN_OFFSET_MS = 5 * 60 * 60 * 1000;
+    var nowLAN = new Date(Date.now() - LAN_OFFSET_MS);
+    var midnightLAN = new Date(Date.UTC(nowLAN.getUTCFullYear(), nowLAN.getUTCMonth(), nowLAN.getUTCDate(), 0, 0, 0, 0));
+    var startOfToday = Math.floor((midnightLAN.getTime() + LAN_OFFSET_MS) / 1000);
     var [resSum, resLea, resMatchHoy, resSpec] = await Promise.all([
         fetchRiot(region,     'lol/summoner/v4/summoners/by-puuid/'  + dataAcc.puuid),
         fetchRiot(region,     'lol/league/v4/entries/by-puuid/'      + dataAcc.puuid),
@@ -1351,6 +1163,60 @@ async function fetchJugador(jug) {
         liveChampId: liveChampId,
         gameStartTime: (resSpec && resSpec.gameStartTime) ? resSpec.gameStartTime : 0
     };
+}
+
+
+// ── HALL OF FAME ──────────────────────────────────────────────
+async function cargarHallOfFame() {
+    var hof = document.getElementById('hof-section');
+    if (!hof) return;
+    try {
+        var res = await fetch('/api/hall-of-fame');
+        var data = await res.json();
+        if (!data || !data.length) { hof.innerHTML = ''; return; }
+        var html = '<div class="hof-title">🏅 CUADRO DE HONOR MENSUAL</div><div class="hof-cards">';
+        data.forEach(function(entry, idx) {
+            var medal = ['🥇','🥈','🥉'][idx] || '🏅';
+            html += '<div class="hof-card" data-tilt data-tilt-max="12" data-tilt-glare data-tilt-max-glare="0.2">' +
+                '<div class="hof-medal">' + medal + '</div>' +
+                '<div class="hof-mes">' + (entry.mes || '') + '</div>' +
+                '<img class="hof-avatar" src="https://ddragon.leagueoflegends.com/cdn/14.24.1/img/profileicon/' + (entry.icono||0) + '.png" onerror="this.src=&quot;https://ddragon.leagueoflegends.com/cdn/14.24.1/img/profileicon/29.png&quot;">' +
+                '<div class="hof-nombre">' + (entry.nombre||'?') + '</div>' +
+                '<div class="hof-stats">' + (entry.tier||'') + ' ' + (entry.rango||'') + ' · ' + (entry.puntos||0) + ' LP</div>' +
+                '</div>';
+        });
+        html += '</div>';
+        hof.innerHTML = html;
+        try { VanillaTilt.init(hof.querySelectorAll('[data-tilt]'), {max:12,speed:300,glare:true,'max-glare':.2}); } catch(e) {}
+    } catch(e) { document.getElementById('hof-section').innerHTML = ''; }
+}
+
+// ── BADGES DE LOGROS VISUALES (calculados en renderTabla) ─────
+function getBadgesAdicionales(jug) {
+    var extra = '';
+    var matches = cacheHistorial[jug.nombre];
+    if (!matches || !matches.length) return extra;
+    
+    // Farmer King: CS promedio > 8/min
+    var csTotal = 0, csPartidas = 0;
+    // Vision Eagle: visionScore más alto del equipo en la sesión
+    var visTotal = 0, visPartidas = 0;
+    // Iron Heart: racha de derrotas (ya manejado, pero aquí lo hacemos visual distinto)
+    
+    matches.forEach(function(m) {
+        var me = m.info?.participants?.find(function(p){ return p.puuid === jug.puuid; });
+        if (!me) return;
+        var dur = (m.info.gameDuration || 1) / 60;
+        csTotal  += ((me.totalMinionsKilled||0) + (me.neutralMinionsKilled||0)) / dur;
+        visTotal += (me.visionScore||0);
+        csPartidas++; visPartidas++;
+    });
+    
+    if (csPartidas > 0) {
+        if (csTotal / csPartidas >= 8.0)  extra += '<span class="ach-badge ach-gold"   title="Farmer King: CS/min promedio ≥ 8.0">🌾</span>';
+        if (visTotal / visPartidas >= 30) extra += '<span class="ach-badge ach-blue"   title="Visión de Águila: Vision Score promedio ≥ 30">👁️</span>';
+    }
+    return extra;
 }
 
 async function initStaticData() {

@@ -530,192 +530,66 @@ body.gaming-house-mode td { font-size: 1.4rem; padding: 25px; }
 /* ══════════════════════════════════════════════
    SCRIMS — Partidas Personalizadas NTI Senior
    ══════════════════════════════════════════════ */
-.tab-scrims {
-    border-color: rgba(239, 68, 68, 0.4) !important;
-    color: #f87171 !important;
-}
-.tab-scrims.activo-tab {
-    background: linear-gradient(135deg, #991b1b, #ef4444) !important;
-    border-color: #ef4444 !important;
-    color: #fff !important;
-    box-shadow: 0 0 20px rgba(239, 68, 68, 0.4);
-}
-
-.scrims-container {
+/* ═══════════════════════════════════════════════════
+   HALL OF FAME — Cuadro de Honor Mensual
+   ═══════════════════════════════════════════════════ */
+#hof-section {
     width: 95%;
     max-width: 1100px;
-    z-index: 1;
-    display: none;
-    margin-bottom: 40px;
-}
-
-.scrims-header {
     margin-bottom: 24px;
-    text-align: center;
+    z-index: 1;
 }
-.scrims-title {
-    font-size: 1.4rem;
-    font-weight: 900;
-    color: var(--gold-main);
-    text-transform: uppercase;
-    letter-spacing: 3px;
-    text-shadow: 0 0 15px rgba(252,211,77,0.4);
-}
-.scrims-subtitle {
+.hof-title {
     font-size: 0.78rem;
-    color: var(--text-muted);
-    font-weight: 600;
-    margin-top: 5px;
-}
-
-.scrims-section {
-    background: var(--bg-table);
-    backdrop-filter: blur(14px);
-    border: 1px solid var(--border-color);
-    border-radius: 14px;
-    padding: 20px 24px;
-    margin-bottom: 18px;
-    box-shadow: 0 8px 30px var(--shadow-main);
-}
-.scrims-section-title {
-    font-size: 0.8rem;
     font-weight: 900;
     color: var(--gold-accent);
     text-transform: uppercase;
     letter-spacing: 2px;
-    margin-bottom: 16px;
-}
-
-.scrims-table {
-    width: 100%;
-    border-collapse: collapse;
-}
-.scrims-table thead th {
-    color: var(--text-muted);
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 14px;
     text-align: center;
 }
-.scrim-stat-row td,
-.scrim-hist-row td {
-    padding: 12px 12px;
+.hof-cards {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+.hof-card {
+    background: linear-gradient(135deg, rgba(200,155,60,0.10) 0%, rgba(10,20,32,0.7) 100%);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(200,155,60,0.3);
+    border-radius: 16px;
+    padding: 20px 24px;
     text-align: center;
-    border-bottom: 1px solid var(--border-color);
-    font-size: 0.88rem;
-    color: var(--text-main);
-    vertical-align: middle;
+    min-width: 160px;
+    max-width: 200px;
+    flex: 1;
+    box-shadow: 0 0 20px rgba(200,155,60,0.12), 0 8px 30px rgba(0,0,0,0.4);
+    transition: transform .2s, box-shadow .2s;
+    transform-style: preserve-3d;
 }
-.scrim-stat-row:hover,
-.scrim-hist-row:hover {
-    background: var(--bg-row-hover);
+.hof-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 0 30px rgba(200,155,60,0.25), 0 12px 40px rgba(0,0,0,0.5);
 }
-.scrim-stat-row:last-child td,
-.scrim-hist-row:last-child td {
-    border-bottom: none;
-}
+.hof-medal  { font-size: 1.8rem; margin-bottom: 6px; }
+.hof-mes    { font-size: 0.65rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+.hof-avatar { width: 56px; height: 56px; border-radius: 50%; border: 2px solid var(--gold-accent); box-shadow: 0 0 12px rgba(200,155,60,0.4); margin-bottom: 8px; }
+.hof-nombre { font-size: 0.9rem; font-weight: 900; color: var(--gold-main); margin-bottom: 4px; }
+.hof-stats  { font-size: 0.7rem; color: var(--text-muted); font-weight: 600; }
 
-/* Formulario agregar scrim */
-.scrims-add-form {
-    border: 1px solid rgba(239, 68, 68, 0.25);
-}
-.scrims-form-grid {
-    display: grid;
-    grid-template-columns: 1fr auto 1fr;
-    gap: 20px;
-    align-items: start;
-}
-.scrims-form-col {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-.scrims-label {
-    font-size: 0.72rem;
-    font-weight: 800;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    margin-bottom: 4px;
-}
-.scrim-select {
-    background: rgba(0,0,0,0.4);
-    border: 1px solid var(--border-color);
-    color: var(--text-main);
-    padding: 9px 12px;
-    border-radius: 8px;
-    font-size: 0.85rem;
-    font-weight: 600;
-    width: 100%;
-    cursor: pointer;
-    transition: border-color 0.2s;
-    font-family: inherit;
-}
-.scrim-select:focus { border-color: var(--gold-accent); outline: none; }
+/* ═══════════════════════════════════════════════════
+   BADGES EXTRA (Farmer King, Vision Eagle)
+   ═══════════════════════════════════════════════════ */
+.ach-badge.ach-gold { filter: drop-shadow(0 0 4px rgba(252,211,77,0.7)); }
+.ach-badge.ach-blue { filter: drop-shadow(0 0 4px rgba(59,130,246,0.7)); }
 
-.scrim-input {
-    background: rgba(0,0,0,0.4);
-    border: 1px solid var(--border-color);
-    color: var(--text-main);
-    padding: 9px 12px;
-    border-radius: 8px;
-    font-size: 0.85rem;
-    width: 100%;
-    font-family: inherit;
-    transition: border-color 0.2s;
+/* ═══════════════════════════════════════════════════
+   TOAST mejorado (más grande y legible)
+   ═══════════════════════════════════════════════════ */
+.toast {
+    min-width: 260px;
+    line-height: 1.5;
 }
-.scrim-input:focus { border-color: var(--gold-accent); outline: none; }
-
-.scrims-resultado-btns {
-    display: flex;
-    gap: 8px;
-}
-.scrim-resultado-btn {
-    padding: 10px 18px;
-    border-radius: 8px;
-    font-weight: 900;
-    font-size: 0.82rem;
-    cursor: pointer;
-    border: 2px solid transparent;
-    transition: all 0.2s;
-    letter-spacing: 0.5px;
-}
-.scrim-win-btn  {
-    background: rgba(16,185,129,0.15);
-    border-color: var(--win-color);
-    color: var(--win-color);
-}
-.scrim-win-btn:hover  { background: var(--win-color); color: #fff; }
-.scrim-lose-btn {
-    background: rgba(239,68,68,0.15);
-    border-color: var(--loss-color);
-    color: var(--loss-color);
-}
-.scrim-lose-btn:hover { background: var(--loss-color); color: #fff; }
-
-.scrim-save-btn {
-    background: linear-gradient(135deg, var(--gold-accent), var(--gold-main));
-    color: #000;
-    border: none;
-    padding: 11px 24px;
-    border-radius: 9px;
-    font-weight: 900;
-    font-size: 0.88rem;
-    cursor: pointer;
-    transition: 0.2s;
-    white-space: nowrap;
-    align-self: flex-end;
-}
-.scrim-save-btn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(200,155,60,0.4);
-}
-
-@media (max-width: 768px) {
-    .scrims-form-grid { grid-template-columns: 1fr; }
-    .scrims-container { width: 100%; }
-    .scrim-stat-row td,
-    .scrim-hist-row td { padding: 8px 6px; font-size: 0.78rem; }
-}
+.toast.toast-win  { border-left-color: var(--win-color);  box-shadow: 0 10px 30px rgba(0,0,0,.6), 0 0 20px rgba(16,185,129,.2); }
+.toast.toast-loss { border-left-color: var(--loss-color); box-shadow: 0 10px 30px rgba(0,0,0,.6), 0 0 20px rgba(239,68,68,.2); }
