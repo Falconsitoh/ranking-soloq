@@ -59,7 +59,8 @@ const jugadoresJunior = [
     {name: 'AkilesCaigo NTI', tag: 'ECNTI', division: 'junior'},
     {name: 'Skoda97', tag: '593', division: 'junior'},
     {name: 'Fabro7373 NTI', tag: '7373', division: 'junior'},
-    {name: 'PSQ LxoFylnns', tag: 'Why', division: 'junior'}
+    {name: 'PSQ LxoFylnns', tag: 'Why', division: 'junior'},
+    {name: 'Azraelh NTI', tag: '8037', division: 'junior'}
 ];
 const todosLosJugadores = [...jugadoresSenior, ...jugadoresJunior];
 
