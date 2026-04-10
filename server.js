@@ -106,21 +106,27 @@ connectDB();
 // ── MOTOR DE ACTUALIZACIÓN ────────────────
 async function actualizarDatosRiot() {
     // LAN = UTC-5 (Colombia, Ecuador, Perú)
-    // Calculamos medianoche en UTC-5, no en UTC del servidor
-    const LAN_OFFSET_MS = 5 * 60 * 60 * 1000; // 5 horas en ms
+    const LAN_OFFSET_MS = 5 * 60 * 60 * 1000; 
     const nowLAN = new Date(Date.now() - LAN_OFFSET_MS);
     const midnightLAN = new Date(nowLAN.getUTCFullYear(), nowLAN.getUTCMonth(), nowLAN.getUTCDate(), 0, 0, 0, 0);
     let startOfToday = Math.floor((midnightLAN.getTime() + LAN_OFFSET_MS) / 1000);
+    
     for (let jug of todosLosJugadores) {
         try {
             const accRes = await axios.get(`https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(jug.name)}/${jug.tag}`, { headers: { 'X-Riot-Token': RIOT_API_KEY }});
             const puuid = accRes.data.puuid;
-            const [leaRes, matchHoyRes] = await Promise.all([
+            
+            // AQUÍ ESTÁ LA MAGIA: Agregamos la llamada (sumRes) para obtener la foto de perfil
+            const [leaRes, matchHoyRes, sumRes] = await Promise.all([
                 axios.get(`https://la1.api.riotgames.com/lol/league/v4/entries/by-puuid/${puuid}`, { headers: { 'X-Riot-Token': RIOT_API_KEY }}),
-                axios.get(`https://americas.api.riotgames.com/lol/match/v5/matches/by-puuid/${puuid}/ids?startTime=${startOfToday}&queue=420&count=100`, { headers: { 'X-Riot-Token': RIOT_API_KEY }})
+                axios.get(`https://americas.api.riotgames.com/lol/match/v5/matches/by-puuid/${puuid}/ids?startTime=${startOfToday}&queue=420&count=100`, { headers: { 'X-Riot-Token': RIOT_API_KEY }}),
+                axios.get(`https://la1.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/${puuid}`, { headers: { 'X-Riot-Token': RIOT_API_KEY }})
             ]);
+            
             const stats = leaRes.data.find(e => e.queueType === 'RANKED_SOLO_5x5') || { tier:'UNRANKED', rank:'', leaguePoints:0, wins:0, losses:0 };
             const nPartidasHoy = matchHoyRes.data.length;
+            const iconoId = sumRes.data.profileIconId; // Guardamos el número del icono
+
             const dataVieja = await jugadoresCollection.findOne({ nombre: jug.name });
             if (dataVieja) {
                 let isWin = false, isLoss = false, lpDiff = 0;
@@ -145,7 +151,9 @@ async function actualizarDatosRiot() {
                     await enviarAlertaDiscord(embed);
                 }
             }
-            await jugadoresCollection.updateOne({ nombre: jug.name }, { $set: { nombre: jug.name, division: jug.division, puuid: puuid, tier: stats.tier, rango: stats.rank, puntos: stats.leaguePoints, victorias: stats.wins, derrotas: stats.losses, partidasHoy: nPartidasHoy, ultimaActualizacion: new Date() }}, { upsert: true });
+            
+            // Guardamos el "icono: iconoId" en la base de datos
+            await jugadoresCollection.updateOne({ nombre: jug.name }, { $set: { nombre: jug.name, division: jug.division, puuid: puuid, icono: iconoId, tier: stats.tier, rango: stats.rank, puntos: stats.leaguePoints, victorias: stats.wins, derrotas: stats.losses, partidasHoy: nPartidasHoy, ultimaActualizacion: new Date() }}, { upsert: true });
             await new Promise(r => setTimeout(r, 500));
         } catch (e) { console.error(`Error en ${jug.name}`); }
     }
