@@ -78,29 +78,7 @@ var itemById = {};
 var ROLES = { TOP: 'TOP', JUNGLE: 'JGL', MIDDLE: 'MID', BOTTOM: 'ADC', UTILITY: 'SUP', '': '?' };
 var STAT_SHARD_NAMES = { 5001: 'HP x Nivel', 5002: 'Armadura', 5003: 'Res. Mágica', 5005: 'Vel. Ataque', 5007: 'Reducción CD', 5008: 'Poder Adaptativo', 5010: 'Vel. Movimiento', 5011: 'HP', 5013: 'Tenacidad', 5014: 'Vel. Ataque', 5021: 'HP Escudo', 5022: 'Tenacidad' };
 
-var jugadoresSenior = [
-    {name: 'Falconnetty NTI', tag: 'TAM', division: 'senior'},
-    {name: 'Leøz', tag: 'JGG', division: 'senior'},
-    {name: 'SaidCxr', tag: 'DFTNS', division: 'senior'},
-    {name: 'Jlbril', tag: 'nge', division: 'senior'},
-    {name: 'Giannisita', tag: '2897', division: 'senior'},
-    {name: 'Daemon I', tag: 'Kyn', division: 'senior'}
-];
-
-var jugadoresJunior = [
-    {name: 'PegasusMaximiNTI', tag: 'JINX', division: 'junior'},
-    {name: 'ska64', tag: 'LAN', division: 'junior'},
-    {name: 'Rengar159 NTI', tag: '5995', division: 'junior'},
-    {name: 'Aelíta', tag: 'AC622', division: 'junior'},
-    {name: 'Issues NTI', tag: 'LANEC', division: 'junior'},
-    {name: 'AkilesCaigo NTI', tag: 'ECNTI', division: 'junior'},
-    {name: 'Skoda97', tag: '593', division: 'junior'},
-    {name: 'Fabro7373 NTI', tag: '7373', division: 'junior'},
-    {name: 'PSQ LxoFylnns', tag: 'Why', division: 'junior'},
-    {name: 'Azraelh NTI', tag: '8037', division: 'junior'}
-];
-
-var todosLosJugadores = [...jugadoresSenior, ...jugadoresJunior];
+// --- ⚡ AQUI QUITE LOS JUGADORES MANUALES. LA LISTA AHORA SE LLENA DESDE EL SERVIDOR ⚡ ---
 var valoresTier = { 'CHALLENGER': 9, 'GRANDMASTER': 8, 'MASTER': 7, 'DIAMOND': 6, 'EMERALD': 5, 'PLATINUM': 4, 'GOLD': 3, 'SILVER': 2, 'BRONZE': 1, 'IRON': 0, 'UNRANKED': -1 };
 
 var datosGlobal = [];
