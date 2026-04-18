@@ -29,7 +29,17 @@ const client = new Client({
 });
 
 client.once('ready', () => { console.log(`🤖 BOT DISCORD EN LÍNEA: Conectado como ${client.user.tag}`); });
-if (DISCORD_TOKEN) { client.login(DISCORD_TOKEN); }
+
+// ⚡ EL CÓDIGO CHIVATO: Nos dirá el error exacto en los Logs de Render ⚡
+if (DISCORD_TOKEN) { 
+    console.log('🔑 DISCORD_TOKEN detectado. Intentando conectar a Discord...');
+    client.login(DISCORD_TOKEN).catch(error => {
+        console.error('❌ ERROR FATAL DE DISCORD:', error.message);
+        console.log('⚠️ Si dice "An invalid token was provided", significa que Discord borró tu token por seguridad porque lo subiste a GitHub. ¡Tendrás que generar uno nuevo en el portal de Discord!');
+    }); 
+} else {
+    console.log('⚠️ ALERTA CRÍTICA: El DISCORD_TOKEN está vacío. Revisa en Render si la variable tiene un espacio en blanco al final del nombre.');
+}
 
 async function enviarAlertaDiscord(embed) {
     try {
@@ -131,7 +141,6 @@ client.on('messageCreate', async (message) => {
     if (command === '!agregar') {
         if (!db) return message.reply("⏳ Conectando a la base de datos...");
         
-        // MODO RÁPIDO (En una sola línea)
         if (args.length >= 3) {
             const division = args.pop().toLowerCase();
             const tag = args.pop();
@@ -144,9 +153,7 @@ client.on('messageCreate', async (message) => {
             await equipoCollection.insertOne({ nombre, tag, division });
             message.reply(`✅ **${nombre}#${tag}** ha sido registrado en **${division.toUpperCase()}**.`);
             actualizarDatosRiot(); 
-        } 
-        // MODO ASISTENTE PASO A PASO
-        else {
+        } else {
             const filter = m => m.author.id === message.author.id;
             try {
                 await message.reply("📝 **Asistente de Registro NTI**\n¡Vamos a agregar a un jugador!\n👉 **Paso 1:** ¿Cuál es el **Nombre de Invocador**? *(Escríbelo exactamente como es, ej: Azraelh NTI)*");
@@ -161,20 +168,15 @@ client.on('messageCreate', async (message) => {
                 const divCol = await message.channel.awaitMessages({ filter, max: 1, time: 60000, errors: ['time'] });
                 const division = divCol.first().content.trim().toLowerCase();
 
-                if (division !== 'senior' && division !== 'junior') {
-                    return message.channel.send("❌ Error: Escribiste mal la división. El registro se ha cancelado. Empieza de nuevo escribiendo `!agregar`.");
-                }
+                if (division !== 'senior' && division !== 'junior') return message.channel.send("❌ Error: Escribiste mal la división. Registro cancelado.");
 
                 const existe = await equipoCollection.findOne({ nombre: new RegExp(`^${nombre}$`, 'i') });
                 if (existe) return message.channel.send(`⚠️ ¡Alto ahí! El jugador **${nombre}** ya existe en la base de datos.`);
 
                 await equipoCollection.insertOne({ nombre, tag, division });
-                message.channel.send(`🎉 **¡REGISTRO COMPLETADO!**\n**${nombre}#${tag}** ha sido agregado oficialmente a la división **${division.toUpperCase()}** por <@${message.author.id}>.\n⏳ *Ya estoy descargando sus datos de Riot, aparecerá en la web pronto.*`);
-                
+                message.channel.send(`🎉 **¡REGISTRO COMPLETADO!**\n**${nombre}#${tag}** agregado a **${division.toUpperCase()}**.\n⏳ *Descargando datos...*`);
                 actualizarDatosRiot(); 
-            } catch (error) {
-                message.channel.send("⏳ Tiempo de espera agotado o hubo un error. Se ha cancelado el asistente.");
-            }
+            } catch (error) { message.channel.send("⏳ Tiempo de espera agotado."); }
         }
     }
 
@@ -182,30 +184,25 @@ client.on('messageCreate', async (message) => {
     if (command === '!eliminar') {
         if (!db) return message.reply("⏳ Conectando a la base de datos...");
 
-        // MODO RÁPIDO
         if (args.length >= 1) {
             const nombre = args.join(' ');
             const resEquipo = await equipoCollection.deleteOne({ nombre: new RegExp(`^${nombre}$`, 'i') });
-            if (resEquipo.deletedCount === 0) return message.reply(`⚠️ No encontré a **${nombre}** en el equipo.`);
+            if (resEquipo.deletedCount === 0) return message.reply(`⚠️ No encontré a **${nombre}**.`);
             await jugadoresCollection.deleteOne({ nombre: new RegExp(`^${nombre}$`, 'i') });
-            message.reply(`🗑️ **${nombre}** ha sido eliminado oficialmente.`);
-        } 
-        // MODO ASISTENTE PASO A PASO
-        else {
+            message.reply(`🗑️ **${nombre}** ha sido eliminado.`);
+        } else {
             const filter = m => m.author.id === message.author.id;
             try {
-                await message.reply("🗑️ **Asistente de Eliminación NTI**\n👉 ¿Cuál es el **Nombre de Invocador exacto** de la persona que quieres eliminar?");
+                await message.reply("🗑️ **Asistente de Eliminación NTI**\n👉 ¿Cuál es el **Nombre de Invocador exacto** a eliminar?");
                 const nombreCol = await message.channel.awaitMessages({ filter, max: 1, time: 60000, errors: ['time'] });
                 const nombre = nombreCol.first().content.trim();
 
                 const resEquipo = await equipoCollection.deleteOne({ nombre: new RegExp(`^${nombre}$`, 'i') });
-                if (resEquipo.deletedCount === 0) return message.channel.send(`⚠️ No existe nadie llamado **${nombre}** en la base de datos. ¡Operación cancelada!`);
+                if (resEquipo.deletedCount === 0) return message.channel.send(`⚠️ No existe **${nombre}**. Cancelado.`);
 
                 await jugadoresCollection.deleteOne({ nombre: new RegExp(`^${nombre}$`, 'i') });
-                message.channel.send(`✅ **${nombre}** ha sido borrado para siempre de la página web y del equipo por <@${message.author.id}>.`);
-            } catch (error) {
-                message.channel.send("⏳ Tiempo de espera agotado. Eliminación cancelada.");
-            }
+                message.channel.send(`✅ **${nombre}** ha sido borrado para siempre.`);
+            } catch (error) { message.channel.send("⏳ Tiempo de espera agotado."); }
         }
     }
 });
@@ -260,7 +257,7 @@ async function actualizarDatosRiot() {
             }
             await jugadoresCollection.updateOne({ nombre: jug.nombre }, { $set: { nombre: jug.nombre, division: jug.division, puuid: puuid, icono: iconoId, tier: stats.tier, rango: stats.rank, puntos: stats.leaguePoints, victorias: stats.wins, derrotas: stats.losses, partidasHoy: nPartidasHoy, ultimaActualizacion: new Date() }}, { upsert: true });
             await new Promise(r => setTimeout(r, 500));
-        } catch (e) { console.error(`Error en ${jug.nombre}`); }
+        } catch (e) {} // Silenciamos los errores de API Riot para no ensuciar los logs
     }
 }
 
