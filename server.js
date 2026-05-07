@@ -271,11 +271,18 @@ app.use('/api/riot', async (req, res) => {
     const parts = req.path.split('/').filter(Boolean);
     const region = parts[0], endpoint = parts.slice(1).join('/');
     const url = `https://${region}.api.riotgames.com/${endpoint}${req.url.includes('?') ? '?' + req.url.split('?')[1] : ''}`;
-    const cached = getCached(url);
-    if (cached && !endpoint.includes('spectator')) return res.json(cached);
+    // No cachear: spectator (siempre fresco), challenger/grandmaster (actualizar cada 5 min)
+    const noCache = endpoint.includes('spectator') || 
+                    endpoint.includes('challengerleagues') || 
+                    endpoint.includes('grandmasterleagues');
+    
+    if (!noCache) {
+        const cached = getCached(url);
+        if (cached) return res.json(cached);
+    }
     try {
         const response = await axios.get(url, { headers: { 'X-Riot-Token': RIOT_API_KEY }, timeout: 8000 });
-        setCache(url, response.data);
+        if (!noCache) setCache(url, response.data);
         res.json(response.data);
     } catch (error) { res.status(error.response?.status || 500).json({ error: 'Error Riot API' }); }
 });
