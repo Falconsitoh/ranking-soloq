@@ -142,6 +142,8 @@ function triggerCounters() {
 }
 
 // ── 5. LÓGICA DE DATOS, RACHAS Y TÍTULOS ──────────────────────
+// ── SISTEMA LP SEMANAL ───────────────────────────────────────
+// Guarda historial de 7 días para sparkline
 function getLPHistory(n) { return JSON.parse(localStorage.getItem('nti_lp_' + n) || '[]'); }
 
 function saveLPSnapshot(nombre, lp, tier) {
@@ -151,31 +153,111 @@ function saveLPSnapshot(nombre, lp, tier) {
         hist[hist.length - 1].lp = lp;
         hist[hist.length - 1].tier = tier;
     } else {
-        hist.push({date: today, lp, tier});
+        hist.push({ date: today, lp: lp, tier: tier });
     }
     if (hist.length > 7) hist.shift();
     localStorage.setItem('nti_lp_' + nombre, JSON.stringify(hist));
+    // Guardar baseline semanal si no existe para esta semana
+    saveWeeklyBaselineIfNeeded(nombre, lp, tier);
+}
+
+// ── BASELINE SEMANAL ─────────────────────────────────────────
+// Guarda el LP del lunes (inicio de semana) para calcular delta semanal
+function getISOWeekKey() {
+    // Semana ISO: Lunes como primer día — clave: "YYYY-Wsemana"
+    var d = new Date();
+    var day = d.getDay(); // 0=Dom, 1=Lun...
+    var diff = (day === 0 ? -6 : 1 - day); // Ajustar a lunes
+    var lunes = new Date(d.setDate(d.getDate() + diff));
+    return lunes.getFullYear() + '-W' + lunes.toDateString();
+}
+
+function saveWeeklyBaselineIfNeeded(nombre, lp, tier) {
+    var key = 'nti_week_base_' + nombre;
+    var saved = JSON.parse(localStorage.getItem(key) || 'null');
+    var weekKey = getISOWeekKey();
+    // Solo guardar si no hay baseline de esta semana
+    if (!saved || saved.weekKey !== weekKey) {
+        localStorage.setItem(key, JSON.stringify({ weekKey: weekKey, lp: lp, tier: tier }));
+    }
 }
 
 function getLPDelta(nombre) {
+    // Delta SEMANAL: LP actual vs LP del inicio de esta semana
     var hist = getLPHistory(nombre);
-    if (hist.length < 2) return null;
-    var today = new Date().toDateString();
-    var te = hist.find(function(h) { return h.date === today; });
-    var pe = hist.filter(function(h) { return h.date !== today; }).pop();
-    if (!te || !pe || te.tier !== pe.tier) return null;
-    return te.lp - pe.lp;
+    if (!hist.length) return null;
+    var current = hist[hist.length - 1];
+    var key = 'nti_week_base_' + nombre;
+    var base = JSON.parse(localStorage.getItem(key) || 'null');
+    if (!base) return null;
+    // No mostrar delta si cambió de tier (reset de temporada, etc.)
+    if (base.tier !== current.tier) return null;
+    var delta = current.lp - base.lp;
+    // Si el delta es absurdo (>500 o <-500) probablemente es de otra temporada — ignorar
+    if (Math.abs(delta) > 500) return null;
+    return delta;
 }
+
+// ── RESET SEMANAL cada domingo a las 23:55 (hora LAN UTC-5) ──
+function programarResetSemanal() {
+    var LAN_OFFSET_MS = 5 * 60 * 60 * 1000;
+    var nowLAN = new Date(Date.now() - LAN_OFFSET_MS);
+    var dia = nowLAN.getUTCDay(); // 0=Dom, 6=Sab
+    var horas = nowLAN.getUTCHours();
+    var mins  = nowLAN.getUTCMinutes();
+    
+    // Calcular ms hasta el próximo domingo 23:55 LAN
+    var diasHastaDomingo = dia === 0 ? 7 : (7 - dia); // Días hasta el próximo domingo
+    if (dia === 0 && (horas < 23 || (horas === 23 && mins < 55))) {
+        diasHastaDomingo = 0; // Estamos en domingo, pero aún no son las 23:55
+    }
+    
+    var targetLAN = new Date(Date.UTC(
+        nowLAN.getUTCFullYear(), nowLAN.getUTCMonth(),
+        nowLAN.getUTCDate() + diasHastaDomingo, 23, 55, 0
+    ));
+    var msHasta = (targetLAN.getTime() + LAN_OFFSET_MS) - Date.now();
+    if (msHasta < 0) msHasta += 7 * 24 * 60 * 60 * 1000;
+    
+    setTimeout(function() {
+        // Reset: borrar todos los baselines para que se regeneren con LP actual
+        var keys = Object.keys(localStorage);
+        keys.forEach(function(k) {
+            if (k.startsWith('nti_week_base_')) localStorage.removeItem(k);
+        });
+        // Guardar nuevos baselines con LP actual para empezar semana nueva
+        datosGlobal.forEach(function(j) {
+            if (!j.error && j.tier && j.puntos !== undefined) {
+                saveWeeklyBaselineIfNeeded(j.nombre, j.puntos, j.tier);
+            }
+        });
+        console.log('[NTI] ✅ Reset semanal de LP completado');
+        programarResetSemanal(); // Reprogramar para la semana siguiente
+    }, msHasta);
+    
+    var d = Math.floor(msHasta / 86400000);
+    var h = Math.floor((msHasta % 86400000) / 3600000);
+    console.log('[NTI] Reset semanal en ' + d + 'd ' + h + 'h');
+}
+
 
 function renderSparkline(nombre) {
     var hist = getLPHistory(nombre);
     if (hist.length < 2) return '';
     var vals = hist.map(function(h) { return h.lp; });
-    var mn = Math.min(...vals), mx = Math.max(...vals), rng = mx - mn || 1;
+    // Sanear: ignorar si hay saltos absurdos entre días (>400 LP) = reset de temporada
+    var sane = true;
+    for (var i = 1; i < vals.length; i++) {
+        if (Math.abs(vals[i] - vals[i-1]) > 400) { sane = false; break; }
+    }
+    if (!sane || vals.length < 2) return '';
+    var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals), rng = mx - mn || 1;
     var W = 56, H = 16;
-    var pts = vals.map(function(v, i) { return ((i / (vals.length - 1)) * W).toFixed(1) + ',' + (H - ((v - mn) / rng) * H).toFixed(1); }).join(' ');
+    var pts = vals.map(function(v, i) {
+        return ((i / (vals.length - 1)) * W).toFixed(1) + ',' + (H - ((v - mn) / rng) * H).toFixed(1);
+    }).join(' ');
     var color = vals[vals.length - 1] >= vals[vals.length - 2] ? 'var(--win-color)' : 'var(--loss-color)';
-    return `<svg class="lp-sparkline" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    return '<svg class="lp-sparkline" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '"><polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 }
 
 function calcNTIScore(jug) {
@@ -292,23 +374,46 @@ function updateTrophyPodium() {
 // ── 7. CORTES DE LIGA ────────────────────
 async function cargarCutoffsLigas() {
     try {
-        var gmRes = await fetchRiot(region, 'lol/league/v4/grandmasterleagues/by-queue/RANKED_SOLO_5x5');
-        var chRes = await fetchRiot(region, 'lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5');
+        // Bypass del caché del servidor (añadir timestamp para forzar respuesta fresca)
+        var ts = '?_t=' + Math.floor(Date.now() / 300000); // Actualiza cada 5 min
+        var gmRes = await fetchRiot(region, 'lol/league/v4/grandmasterleagues/by-queue/RANKED_SOLO_5x5' + ts);
+        var chRes = await fetchRiot(region, 'lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5' + ts);
         
-        if (gmRes && gmRes.entries) {
-            var gmArr = gmRes.entries.map(function(x) { return x.leaguePoints; }).sort(function(a,b){return b-a;});
-            var gmLp = gmArr[gmArr.length - 1] || 0;
-            var el = document.getElementById('cutoff-gm');
-            if (el) { el.setAttribute('data-val', gmLp); el.classList.add('counter-anim'); }
+        var elGm = document.getElementById('cutoff-gm');
+        var elCh = document.getElementById('cutoff-cha');
+        
+        if (gmRes && gmRes.entries && gmRes.entries.length > 0) {
+            var gmArr = gmRes.entries.map(function(x){ return x.leaguePoints; }).sort(function(a,b){ return a-b; });
+            var gmLp = gmArr[0] || 0; // El MÍNIMO LP para estar en GM (el de menor LP)
+            if (gmLp > 0) localStorage.setItem('nti_cutoff_gm', gmLp); // Guardar último valor válido
+            else gmLp = parseInt(localStorage.getItem('nti_cutoff_gm') || '0');
+            if (elGm) { elGm.setAttribute('data-val', gmLp); elGm.classList.add('counter-anim'); }
+        } else {
+            // Mostrar último valor conocido si la API falla
+            var cached = parseInt(localStorage.getItem('nti_cutoff_gm') || '0');
+            if (elGm && cached > 0) { elGm.setAttribute('data-val', cached); elGm.classList.add('counter-anim'); }
         }
-        if (chRes && chRes.entries) {
-            var chArr = chRes.entries.map(function(x) { return x.leaguePoints; }).sort(function(a,b){return b-a;});
-            var chLp = chArr[chArr.length - 1] || 0;
-            var el = document.getElementById('cutoff-cha');
-            if (el) { el.setAttribute('data-val', chLp); el.classList.add('counter-anim'); }
+        
+        if (chRes && chRes.entries && chRes.entries.length > 0) {
+            var chArr = chRes.entries.map(function(x){ return x.leaguePoints; }).sort(function(a,b){ return a-b; });
+            var chLp = chArr[0] || 0;
+            if (chLp > 0) localStorage.setItem('nti_cutoff_ch', chLp);
+            else chLp = parseInt(localStorage.getItem('nti_cutoff_ch') || '0');
+            if (elCh) { elCh.setAttribute('data-val', chLp); elCh.classList.add('counter-anim'); }
+        } else {
+            var cachedCh = parseInt(localStorage.getItem('nti_cutoff_ch') || '0');
+            if (elCh && cachedCh > 0) { elCh.setAttribute('data-val', cachedCh); elCh.classList.add('counter-anim'); }
         }
-        triggerCounters(); // Animar los números
-    } catch (e) { console.error("Error cargando cortes:", e); }
+        
+        triggerCounters();
+    } catch (e) {
+        // En caso de error, mostrar último valor conocido sin crashear
+        var gm = parseInt(localStorage.getItem('nti_cutoff_gm') || '0');
+        var ch = parseInt(localStorage.getItem('nti_cutoff_ch') || '0');
+        var elGm2 = document.getElementById('cutoff-gm'), elCh2 = document.getElementById('cutoff-cha');
+        if (elGm2 && gm > 0) { elGm2.textContent = gm + ' LP'; }
+        if (elCh2 && ch > 0) { elCh2.textContent = ch + ' LP'; }
+    }
 }
 
 // ── 8. OBTENER DATOS (Carga Rápida Optimizada) ────────
@@ -467,7 +572,7 @@ function renderTabla() {
         var tierIcon = `https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/images/ranked-emblem/emblem-${tierLow}.png`;
         var wrClass = wr > 50 ? 'wr-verde' : 'wr-rojo';
         var delta = getLPDelta(j.nombre);
-        var deltaH = delta !== null ? `<span class="lp-delta ${delta >= 0 ? 'lp-delta-up' : 'lp-delta-down'}">${delta >= 0 ? '+' : ''}${delta}</span>` : '';
+        var deltaH = delta !== null ? '<span class="lp-delta ' + (delta >= 0 ? 'lp-delta-up' : 'lp-delta-down') + '" title="LP ganados/perdidos esta semana">' + (delta >= 0 ? '+' : '') + delta + ' esta sem.</span>' : '';
         var sparkH = renderSparkline(j.nombre);
         
         var isPinned = pinnedPlayer === j.nombre;
@@ -1221,7 +1326,7 @@ async function initStaticData() {
 
 initStaticData().then(function() {
     initParticles();
-    // Cutoffs se cargan INMEDIATAMENTE en paralelo, sin esperar jugadores
+    programarResetSemanal(); // Programar reset LP cada domingo 23:55 LAN
     cargarCutoffsLigas();
     obtenerDatos();
     iniciarTimer();
