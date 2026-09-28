@@ -38,10 +38,11 @@ if (DISCORD_TOKEN) {
         console.log('⚠️ Si dice "An invalid token was provided", significa que Discord borró tu token por seguridad porque lo subiste a GitHub. ¡Tendrás que generar uno nuevo en el portal de Discord!');
     }); 
 } else {
-    console.log('⚠️ ALERTA CRÍTICA: El DISCORD_TOKEN está vacío. Revisa en Render si la variable tiene un espacio en blanco al final del nombre.');
+    console.log('ℹ️ NTI Tracker apagado (sin DISCORD_TOKEN). Los avisos de Discord los manda LD Tracker. El dashboard sigue funcionando normal.');
 }
 
 async function enviarAlertaDiscord(embed) {
+    if (!DISCORD_TOKEN) return; // NTI Tracker apagado: los avisos los manda LD Tracker
     try {
         const channel = await client.channels.fetch(DISCORD_CHANNEL_ID);
         if (channel) await channel.send({ embeds: [embed] });
@@ -333,8 +334,9 @@ app.get('/api/hall-of-fame', async (req, res) => {
 
 app.get('/manifest.json', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'manifest.json')); });
 
-// ─── Bot de Discord LD Tracker (vive en este mismo servicio) ───
-require('./bot.js');
 app.get('/', (req, res) => { res.send('<h1>¡Servidor de NTI Esports operativo! 🚀</h1><p>Si ves esto, el backend está vivo.</p>'); });
 
 app.listen(PORT, '0.0.0.0', () => { console.log(`🚀 Servidor NTI activo en puerto: ${PORT}`); });
+
+// ─── Bot de Discord LD Tracker (vive en este mismo servicio) ───
+require('./bot.js');
