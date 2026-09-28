@@ -332,6 +332,9 @@ app.get('/api/hall-of-fame', async (req, res) => {
 });
 
 app.get('/manifest.json', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'manifest.json')); });
+
+// ─── Bot de Discord LD Tracker (vive en este mismo servicio) ───
+require('./bot.js');
 app.get('/', (req, res) => { res.send('<h1>¡Servidor de NTI Esports operativo! 🚀</h1><p>Si ves esto, el backend está vivo.</p>'); });
 
 app.listen(PORT, '0.0.0.0', () => { console.log(`🚀 Servidor NTI activo en puerto: ${PORT}`); });
