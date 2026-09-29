@@ -235,6 +235,24 @@ let limitesRiot = [{ max: 20, ventanaMs: 1_000 }, { max: 100, ventanaMs: 120_000
 const historialRiot = []; // momentos (ms) de las peticiones recientes, en orden
 const filasRiot = { alta: [], normal: [] };
 let atendiendoFila = false;
+let pausaRiotHasta = 0; // si Riot responde 429, TODA la fila espera (no solo esa consulta)
+
+/**
+ * Si otra app usa la misma key (por ejemplo, el dashboard), Riot nos dice en cada respuesta
+ * cuántas consultas lleva en total ("X-App-Rate-Limit-Count"). Las que no hicimos nosotros se
+ * suman a nuestro conteo, así el bot se frena solo antes de chocar con el límite.
+ */
+function sincronizarConteo(cabecera) {
+  if (!cabecera) return;
+  const ahora = Date.now();
+  for (const par of cabecera.split(',')) {
+    const [usadas, segundos] = par.split(':').map(Number);
+    const limite = limitesRiot.find((l) => l.ventanaMs === segundos * 1000);
+    if (!limite || !(usadas > 0)) continue;
+    const ajenas = Math.min(usadas - peticionesDesde(ahora - limite.ventanaMs), limite.max);
+    for (let i = 0; i < ajenas; i++) historialRiot.push(ahora);
+  }
+}
 
 function actualizarLimites(cabecera) {
   if (!cabecera) return;
@@ -289,6 +307,11 @@ async function atenderFila() {
   if (atendiendoFila) return;
   atendiendoFila = true;
   while (filasRiot.alta.length || filasRiot.normal.length) {
+    const pausa = pausaRiotHasta - Date.now();
+    if (pausa > 0) {
+      await dormir(Math.min(pausa, 1_000));
+      continue;
+    }
     const prioridad = filasRiot.alta.length ? 'alta' : 'normal';
     const ahora = Date.now();
     const espera = esperaNecesaria(prioridad, ahora);
@@ -312,16 +335,18 @@ async function riotGet(url, prioridad = 'normal', intento = 1) {
       timeout: 10_000,
     });
     actualizarLimites(respuesta.headers?.['x-app-rate-limit']);
+    sincronizarConteo(respuesta.headers?.['x-app-rate-limit-count']);
     return respuesta.data;
   } catch (err) {
     const status = err.response?.status;
     actualizarLimites(err.response?.headers?.['x-app-rate-limit']);
+    sincronizarConteo(err.response?.headers?.['x-app-rate-limit-count']);
 
     // 429 = nos pasamos del límite (por ejemplo, otra app usa la misma key): Riot dice cuánto esperar
     if (status === 429 && intento <= 3) {
       const segundos = Number(err.response.headers?.['retry-after']) || 10;
-      console.warn(`⏳ Límite de Riot alcanzado, esperando ${segundos}s...`);
-      await dormir(segundos * 1000);
+      pausaRiotHasta = Math.max(pausaRiotHasta, Date.now() + segundos * 1000);
+      console.warn(`⏳ Límite de Riot alcanzado, toda la fila espera ${segundos}s...`);
       return riotGet(url, prioridad, intento + 1);
     }
     // 5xx o sin respuesta = problema temporal de Riot o de red
@@ -963,6 +988,12 @@ async function procesarPartida(partidaId, jugador, equipo) {
   const mensaje = await construirMensajePartida({ equipo, resumen, modo, resultados });
   await enviarAviso(equipo, mensaje);
 
+  // Si el equipo tiene canal de tareas, el avance va allá (y no en la tarjeta)
+  if (equipo.canalTareasId) {
+    const avance = construirEmbedAvanceTareas({ resumen, modo, resultados });
+    if (avance) await enviarAviso(equipo, { embeds: [avance] }, { conPing: false, destino: 'tareas' });
+  }
+
   for (const r of resultados) await guardarResultado(r, partidaId, resumen);
 
   // Precarga los rangos del Scoreboard para que el botón abra al instante
@@ -1059,9 +1090,11 @@ async function refrescarPuuid(jugador) {
 }
 
 /** Envía un mensaje al canal del equipo. Devuelve true si se pudo enviar. */
-async function enviarAviso(equipo, mensaje, { conPing = true } = {}) {
+async function enviarAviso(equipo, mensaje, { conPing = true, destino = 'partidas' } = {}) {
+  // Las tareas van a su canal propio si el equipo lo tiene; si no, al de partidas
+  const canalId = destino === 'tareas' ? (equipo.canalTareasId || equipo.canalId) : equipo.canalId;
   try {
-    const canal = await client.channels.fetch(equipo.canalId);
+    const canal = await client.channels.fetch(canalId);
     const final = { ...mensaje };
     if (conPing && equipo.rolPingId) {
       final.content = `<@&${equipo.rolPingId}>`;
@@ -1170,8 +1203,34 @@ async function revisarVencimientos(equiposPorId) {
       .setDescription(
         tareas.map((t) => `❌ **${t.jugadorNombre}** · ${describirTarea(t)} — ${t.progreso ?? 0}/${t.cantidad}`).join('\n').slice(0, 4000),
       );
-    await enviarAviso(equipo, { embeds: [embed] }, { conPing: false });
+    await enviarAviso(equipo, { embeds: [embed] }, { conPing: false, destino: 'tareas' });
   }
+}
+
+/** Mensaje para el canal de tareas: qué avanzó (o se completó) con esta partida. */
+function construirEmbedAvanceTareas({ resumen, modo, resultados }) {
+  const avances = resultados.flatMap((r) => (r.tareas ?? []).map((t) => ({ t, r })));
+  if (!avances.length) return null;
+
+  const completadas = avances.filter(({ t }) => t.completada).length;
+  const region = REGION_POR_PLATAFORMA[resumen.plataforma] ?? 'LAN';
+  const lineas = avances.map(({ t, r }) => {
+    const quien = `**${r.p.nombre || r.jugador.nombre}**${r.jugador.discordId ? ` <@${r.jugador.discordId}>` : ''}`;
+    return t.completada
+      ? `✅ ${quien} · ${describirTarea(t)} — **¡completada!**`
+      : `${barraProgreso(t.progreso, t.cantidad)} ${quien} · ${describirTarea(t)} (${t.progreso}/${t.cantidad})`;
+  });
+  let titulo = '📋 Avance de tareas';
+  if (completadas === 1) titulo = '✅ ¡Tarea completada!';
+  if (completadas > 1) titulo = `✅ ¡${completadas} tareas completadas!`;
+
+  return new EmbedBuilder()
+    .setColor(completadas ? COLORES.victoria : COLORES.info)
+    .setTitle(titulo)
+    .setURL(urlPartida(region, resumen.gameId))
+    .setDescription(lineas.join('\n').slice(0, 4000))
+    .setFooter({ text: `Por su partida de ${modo.nombre} · toca el título para verla` })
+    .setTimestamp(new Date(resumen.fin));
 }
 
 // ═════════════════════════ 9. TARJETAS ═════════════════════════
@@ -1276,7 +1335,8 @@ function construirEmbedPartida({ equipo, region, resumen, modo, resultados, riva
     embed.addFields({ name: '🌟 Con su equipo', value: lineasEquipo.join('\n').slice(0, 1024) });
   }
 
-  const avances = resultados.flatMap((r) => (r.tareas ?? []).map((t) => ({ t, r })));
+  // Las tareas salen en la tarjeta solo si el equipo NO tiene canal de tareas aparte
+  const avances = equipo.canalTareasId ? [] : resultados.flatMap((r) => (r.tareas ?? []).map((t) => ({ t, r })));
   if (avances.length) {
     const lineasTareas = avances.map(({ t, r }) => {
       const quien = resultados.length > 1 ? `**${r.p.nombre || r.jugador.nombre}** · ` : '';
@@ -1413,7 +1473,15 @@ const comandos = [
     .addStringOption((o) => o.setName('nombre').setDescription('Nombre del equipo, ej: Team A').setRequired(true).setMaxLength(40))
     .addChannelOption((o) => o.setName('canal').setDescription('Canal donde llegarán los avisos de este equipo').addChannelTypes(ChannelType.GuildText).setRequired(true))
     .addRoleOption((o) => o.setName('rol_coach').setDescription('Rol que podrá agregar y quitar jugadores de este equipo').setRequired(true))
-    .addRoleOption((o) => o.setName('rol_ping').setDescription('(Opcional) Rol que se menciona en cada aviso de este equipo')),
+    .addRoleOption((o) => o.setName('rol_ping').setDescription('(Opcional) Rol que se menciona en cada aviso de este equipo'))
+    .addChannelOption((o) => o.setName('canal_tareas').setDescription('(Opcional) Canal aparte solo para las tareas de este equipo').addChannelTypes(ChannelType.GuildText)),
+
+  new SlashCommandBuilder()
+    .setName('equipo-tareas')
+    .setDescription('Asigna o quita el canal de tareas de un equipo (solo admins)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addStringOption((o) => o.setName('equipo').setDescription('Nombre del equipo').setRequired(true).setAutocomplete(true))
+    .addChannelOption((o) => o.setName('canal').setDescription('Canal de tareas (déjalo vacío para que vuelvan al canal de partidas)').addChannelTypes(ChannelType.GuildText)),
 
   new SlashCommandBuilder()
     .setName('equipo-eliminar')
@@ -1496,8 +1564,27 @@ const comandos = [
 
 const esAdmin = (miembro) => miembro.permissions.has(PermissionFlagsBits.ManageGuild);
 const puedeGestionar = (miembro, equipo) => esAdmin(miembro) || miembro.roles.cache.has(equipo.rolCoachId);
-const equipoDelCanal = (interaction) =>
-  equiposCol.findOne({ guildId: interaction.guildId, canalId: interaction.channelId });
+const equipoDelCanal = async (interaction) =>
+  (await equiposCol.findOne({ guildId: interaction.guildId, canalId: interaction.channelId }))
+  ?? (await equiposCol.findOne({ guildId: interaction.guildId, canalTareasId: interaction.channelId }));
+
+async function botPuedeEscribir(interaction, canal) {
+  const yo = interaction.guild.members.me ?? (await interaction.guild.members.fetchMe());
+  const necesarios = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks];
+  return Boolean(canal.permissionsFor(yo)?.has(necesarios));
+}
+
+/** Devuelve el motivo por el que ese canal no sirve como canal de tareas, o null si sirve. */
+async function problemaCanalTareas(interaction, canal, equipo) {
+  if (canal.id === equipo.canalId) return '⚠️ Ese es el canal de partidas del equipo. Para las tareas elige otro canal.';
+  const otro = (await equiposCol.find({ guildId: interaction.guildId }).toArray())
+    .find((e) => String(e._id) !== String(equipo._id) && (e.canalId === canal.id || e.canalTareasId === canal.id));
+  if (otro) return `⚠️ ${canal} ya lo usa el equipo **${otro.nombre}**. Elige otro canal.`;
+  if (!(await botPuedeEscribir(interaction, canal))) {
+    return `⚠️ No tengo permiso para ver, escribir o mandar embeds en ${canal}. Dámelos y vuelve a intentar.`;
+  }
+  return null;
+}
 
 function responderPrivado(interaction, content) {
   if (interaction.deferred || interaction.replied) return interaction.editReply({ content, embeds: [] });
@@ -1516,13 +1603,18 @@ const manejadores = {
     const canal = interaction.options.getChannel('canal');
     const rolCoach = interaction.options.getRole('rol_coach');
     const rolPing = interaction.options.getRole('rol_ping');
+    const canalTareas = interaction.options.getChannel('canal_tareas');
 
-    // Verificamos que el bot pueda escribir en ese canal ANTES de guardarlo
-    const yo = interaction.guild.members.me ?? (await interaction.guild.members.fetchMe());
-    const permisos = canal.permissionsFor(yo);
-    const necesarios = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks];
-    if (!permisos?.has(necesarios)) {
+    // Verificamos que el bot pueda escribir en los canales ANTES de guardarlos
+    if (!(await botPuedeEscribir(interaction, canal))) {
       return responderPrivado(interaction, `⚠️ No tengo permiso para ver, escribir o mandar embeds en ${canal}. Dámelos y vuelve a intentar.`);
+    }
+    if (await equiposCol.findOne({ guildId: interaction.guildId, canalTareasId: canal.id })) {
+      return responderPrivado(interaction, `⚠️ ${canal} ya es el canal de tareas de otro equipo. Elige otro canal para las partidas.`);
+    }
+    if (canalTareas) {
+      const problema = await problemaCanalTareas(interaction, canalTareas, { canalId: canal.id });
+      if (problema) return responderPrivado(interaction, problema);
     }
 
     try {
@@ -1533,6 +1625,7 @@ const manejadores = {
         canalId: canal.id,
         rolCoachId: rolCoach.id,
         rolPingId: rolPing?.id ?? null,
+        canalTareasId: canalTareas?.id ?? null,
         creadoEn: new Date(),
       });
     } catch (err) {
@@ -1543,7 +1636,7 @@ const manejadores = {
     }
 
     return interaction.reply(
-      `✅ Equipo **${nombre}** creado.\nAvisos en ${canal} · Coaches: ${rolCoach}${rolPing ? ` · Ping: ${rolPing}` : ''}`,
+      `✅ Equipo **${nombre}** creado.\nPartidas en ${canal}${canalTareas ? ` · Tareas en ${canalTareas}` : ''} · Coaches: ${rolCoach}${rolPing ? ` · Ping: ${rolPing}` : ''}`,
     );
   },
 
@@ -1560,6 +1653,27 @@ const manejadores = {
     return interaction.reply(`🗑️ Equipo **${equipo.nombre}** eliminado junto con ${deletedCount} jugador(es).`);
   },
 
+  async 'equipo-tareas'(interaction) {
+    if (!esAdmin(interaction.member)) return responderPrivado(interaction, '⛔ Solo administradores pueden cambiar los canales de un equipo.');
+
+    const nombre = interaction.options.getString('equipo').trim();
+    const equipo = await equiposCol.findOne({ guildId: interaction.guildId, nombreLower: nombre.toLowerCase() });
+    if (!equipo) return responderPrivado(interaction, `No encontré el equipo **${nombre}**. Elígelo de la lista.`);
+
+    const canal = interaction.options.getChannel('canal');
+    if (!canal) {
+      await equiposCol.updateOne({ _id: equipo._id }, { $set: { canalTareasId: null } });
+      return interaction.reply(`📋 Listo: las tareas de **${equipo.nombre}** vuelven a salir en su canal de partidas <#${equipo.canalId}>.`);
+    }
+    const problema = await problemaCanalTareas(interaction, canal, equipo);
+    if (problema) return responderPrivado(interaction, problema);
+
+    await equiposCol.updateOne({ _id: equipo._id }, { $set: { canalTareasId: canal.id } });
+    return interaction.reply(
+      `📋 Listo: las tareas de **${equipo.nombre}** ahora van en ${canal}.\nLas partidas siguen en <#${equipo.canalId}>, y los comandos del equipo funcionan en los dos canales.`,
+    );
+  },
+
   async equipos(interaction) {
     const lista = await equiposCol.find({ guildId: interaction.guildId }).sort({ nombreLower: 1 }).toArray();
     if (!lista.length) return responderPrivado(interaction, 'Aún no hay equipos. Un admin puede crearlos con /equipo-crear.');
@@ -1570,7 +1684,7 @@ const manejadores = {
     const totalPorEquipo = new Map(conteos.map((c) => [String(c._id), c.total]));
 
     const lineas = lista.map((e) =>
-      `**${e.nombre}** → <#${e.canalId}> · Coach: <@&${e.rolCoachId}> · ${totalPorEquipo.get(String(e._id)) ?? 0} jugadores`,
+      `**${e.nombre}** → <#${e.canalId}>${e.canalTareasId ? ` · 📋 <#${e.canalTareasId}>` : ''} · Coach: <@&${e.rolCoachId}> · ${totalPorEquipo.get(String(e._id)) ?? 0} jugadores`,
     );
     const embed = new EmbedBuilder().setColor(COLORES.info).setTitle('🏟️ Equipos de la organización').setDescription(lineas.join('\n'));
     return interaction.reply({ embeds: [embed] });
@@ -1806,7 +1920,7 @@ const manejadores = {
       .setColor(COLORES.info)
       .setTitle('🤖 Comandos del bot')
       .addFields(
-        { name: '👑 Admins', value: '`/equipo-crear` · `/equipo-eliminar` · `/probar` (tarjeta de prueba)' },
+        { name: '👑 Admins', value: '`/equipo-crear` · `/equipo-tareas` (canal aparte para tareas) · `/equipo-eliminar` · `/probar`' },
         { name: '🎯 Coaches (en el canal de su equipo)', value: '`/agregar` · `/quitar` · `/vincular` (enlaza su Discord)\n`/tarea crear` · `/tarea cancelar`' },
         { name: '👥 Todos', value: '`/roster` · `/equipos` · `/tarea lista` · `/ayuda`' },
         { name: '📬 Avisos automáticos', value: 'SoloQ, Flex y normales. Si varios del mismo equipo juegan juntos, sale una sola tarjeta en **dorado** 🌟.' },
@@ -1897,11 +2011,21 @@ async function crearTarea(interaction, equipo) {
       value: jugadores.map((j) => (j.discordId ? `<@${j.discordId}>` : `**${j.nombre}#${j.tag}**`)).join(', ').slice(0, 1024),
     })
     .setFooter({ text: 'Solo cuentan las partidas jugadas desde ahora · Mira el avance con /tarea lista' });
-  return interaction.reply({
+  const anuncio = {
     content: menciones.length ? menciones.map((id) => `<@${id}>`).join(' ') : undefined,
     embeds: [embed],
     allowedMentions: { users: menciones },
-  });
+  };
+  if (equipo.canalTareasId && interaction.channelId !== equipo.canalTareasId) {
+    const enviado = await enviarAviso(equipo, anuncio, { conPing: false, destino: 'tareas' });
+    return responderPrivado(
+      interaction,
+      enviado
+        ? `✅ Tarea creada. La anuncié en <#${equipo.canalTareasId}>.`
+        : `⚠️ La tarea se creó, pero no pude escribir en <#${equipo.canalTareasId}>. Revisa los permisos del bot ahí.`,
+    );
+  }
+  return interaction.reply(anuncio);
 }
 
 async function listarTareas(interaction, equipo) {
@@ -1947,7 +2071,12 @@ async function manejarAutocompletado(interaction) {
   const buscado = normalizar(foco.value);
   let opciones = [];
 
-  if (foco.name === 'campeon') {
+  if (foco.name === 'equipo') {
+    const equipos = await equiposCol.find({ guildId: interaction.guildId }).toArray();
+    opciones = equipos
+      .filter((e) => normalizar(e.nombre).includes(buscado))
+      .map((e) => ({ name: e.nombre, value: e.nombre }));
+  } else if (foco.name === 'campeon') {
     await cargarDatosEstaticos();
     opciones = [...estatico.campeones]
       .filter(([, nombre]) => normalizar(nombre).includes(buscado))
