@@ -691,6 +691,8 @@ let equiposCol;
 let jugadoresCol;
 let partidasCol;
 let tareasCol;
+let mensajesCol; // qué mensajes mandó el bot y de quién eran (para poder limpiarlos después)
+const DIAS_GUARDAR_MENSAJES = 180;
 
 async function conectarMongo() {
   mongo = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 10_000 });
@@ -700,6 +702,7 @@ async function conectarMongo() {
   jugadoresCol = db.collection('jugadores');
   partidasCol = db.collection('partidas');
   tareasCol = db.collection('tareas');
+  mensajesCol = db.collection('mensajes');
 
   // Un canal = un equipo, nombres de equipo únicos y cada cuenta en UN solo equipo.
   await equiposCol.createIndex({ guildId: 1, canalId: 1 }, { unique: true });
@@ -710,6 +713,8 @@ async function conectarMongo() {
   await partidasCol.createIndex({ creadoEn: 1 }, { expireAfterSeconds: DIAS_GUARDAR_PARTIDAS * 86_400 });
   await tareasCol.createIndex({ puuid: 1, estado: 1 });
   await tareasCol.createIndex({ equipoId: 1, estado: 1 });
+  await mensajesCol.createIndex({ equipoId: 1 });
+  await mensajesCol.createIndex({ creadoEn: 1 }, { expireAfterSeconds: DIAS_GUARDAR_MENSAJES * 86_400 });
   console.log('✅ Conectado a MongoDB');
 }
 
@@ -1007,6 +1012,7 @@ async function procesarPartida(partidaId, jugador, equipo) {
     // UNA sola tarjeta para todo el equipo, SOLO en su canal
     const mensaje = await construirMensajePartida({ equipo, resumen, modo, resultados });
     const enviado = await enviarAviso(equipo, mensaje);
+    if (enviado) await registrarMensaje(equipo, enviado, resultados.map((r) => r.jugador.puuid), 'partida');
     if (!enviado) {
       const intentos = (jugador.reintentosAviso ?? 0) + 1;
       if (intentos < MAX_REINTENTOS_AVISO) {
@@ -1023,7 +1029,10 @@ async function procesarPartida(partidaId, jugador, equipo) {
   // El avance de tareas va aparte si hay canal de tareas, o si esta partida no se muestra
   if (equipo.canalTareasId || !mostrar) {
     const avance = construirEmbedAvanceTareas({ resumen, modo, resultados });
-    if (avance) await enviarAviso(equipo, { embeds: [avance] }, { conPing: false, destino: 'tareas' });
+    const enviadoAvance = avance && (await enviarAviso(equipo, { embeds: [avance] }, { conPing: false, destino: 'tareas' }));
+    if (enviadoAvance) {
+      await registrarMensaje(equipo, enviadoAvance, resultados.filter((r) => r.tareas?.length).map((r) => r.jugador.puuid), 'tareas');
+    }
   }
 
   for (const r of resultados) await guardarResultado(r, partidaId, resumen);
@@ -1133,8 +1142,7 @@ async function enviarAviso(equipo, mensaje, { conPing = true, destino = 'partida
       final.content = `<@&${equipo.rolPingId}>`;
       final.allowedMentions = { roles: [equipo.rolPingId] }; // solo se pinguea el rol de ESTE equipo
     }
-    await canal.send(final);
-    return true;
+    return (await canal.send(final)) ?? true; // devuelve el mensaje enviado (o false si falló)
   } catch (err) {
     const servidor = client.guilds.cache.get(equipo.guildId)?.name ?? 'servidor desconocido';
     const motivo = {
@@ -1247,8 +1255,44 @@ async function revisarVencimientos(equiposPorId) {
       .setDescription(
         tareas.map((t) => `❌ **${t.jugadorNombre}** · ${describirTarea(t)} — ${t.progreso ?? 0}/${t.cantidad}`).join('\n').slice(0, 4000),
       );
-    await enviarAviso(equipo, { embeds: [embed] }, { conPing: false, destino: 'tareas' });
+    const enviado = await enviarAviso(equipo, { embeds: [embed] }, { conPing: false, destino: 'tareas' });
+    if (enviado) await registrarMensaje(equipo, enviado, tareas.map((t) => t.puuid), 'tareas');
   }
+}
+
+/** Anota un mensaje del bot: en qué canal quedó, de qué equipo es y de qué jugadores habla. */
+async function registrarMensaje(equipo, mensaje, puuids, tipo) {
+  if (!mensaje?.id || !mensaje.channelId) return;
+  await mensajesCol
+    .insertOne({
+      mensajeId: mensaje.id,
+      canalId: mensaje.channelId,
+      guildId: equipo.guildId,
+      equipoId: equipo._id,
+      puuids: [...new Set(puuids)],
+      tipo,
+      creadoEn: new Date(),
+    })
+    .catch(() => {});
+}
+
+/**
+ * Borra de Discord los mensajes del bot indicados (el bot siempre puede borrar los suyos, sin permisos extra)
+ * y quita sus registros. Devuelve cuántos se borraron.
+ */
+async function borrarMensajesDelBot(registros) {
+  let borrados = 0;
+  for (const r of registros) {
+    try {
+      const canal = await client.channels.fetch(r.canalId);
+      await canal.messages.delete(r.mensajeId);
+      borrados++;
+    } catch (err) {
+      if (err.code !== 10008 && err.code !== 10003) console.warn('⚠️ No pude borrar un mensaje:', err.message); // 10008/10003: ya no existía
+    }
+    await mensajesCol.deleteOne({ _id: r._id }).catch(() => {});
+  }
+  return borrados;
 }
 
 /** Mensaje para el canal de tareas: qué avanzó (o se completó) con esta partida. */
@@ -1537,9 +1581,9 @@ const comandos = [
 
   new SlashCommandBuilder()
     .setName('equipo-eliminar')
-    .setDescription('Elimina un equipo y todos sus jugadores (solo admins)')
+    .setDescription('Elimina un equipo y todos sus jugadores, pidiendo confirmación (solo admins)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addStringOption((o) => o.setName('nombre').setDescription('Nombre del equipo').setRequired(true)),
+    .addStringOption((o) => o.setName('nombre').setDescription('Nombre del equipo').setRequired(true).setAutocomplete(true)),
 
   new SlashCommandBuilder()
     .setName('equipos')
@@ -1561,7 +1605,8 @@ const comandos = [
   new SlashCommandBuilder()
     .setName('quitar')
     .setDescription('Quita un jugador del equipo de ESTE canal (solo coaches)')
-    .addStringOption((o) => o.setName('riot_id').setDescription('Jugador del equipo (elígelo de la lista)').setRequired(true).setAutocomplete(true)),
+    .addStringOption((o) => o.setName('riot_id').setDescription('Jugador del equipo (elígelo de la lista)').setRequired(true).setAutocomplete(true))
+    .addBooleanOption((o) => o.setName('borrar_mensajes').setDescription('¿Borrar también sus tarjetas y avisos? (las partidas en equipo se conservan)')),
 
   new SlashCommandBuilder()
     .setName('roster')
@@ -1731,10 +1776,26 @@ const manejadores = {
     const equipo = await equiposCol.findOne({ guildId: interaction.guildId, nombreLower: nombre.toLowerCase() });
     if (!equipo) return responderPrivado(interaction, `No encontré el equipo **${nombre}**. Revisa con /equipos.`);
 
-    const { deletedCount } = await jugadoresCol.deleteMany({ equipoId: equipo._id });
-    await tareasCol.deleteMany({ equipoId: equipo._id });
-    await equiposCol.deleteOne({ _id: equipo._id });
-    return interaction.reply(`🗑️ Equipo **${equipo.nombre}** eliminado junto con ${deletedCount} jugador(es).`);
+    // No se borra nada todavía: primero se pide confirmación con botones (solo para quien lo pidió)
+    const jugadores = (await jugadoresCol.find({ equipoId: equipo._id }).toArray()).length;
+    const mensajes = (await mensajesCol.find({ equipoId: equipo._id }).toArray()).length;
+    const datos = `${interaction.user.id}|${Date.now()}|${equipo.nombreLower}`;
+    const botones = [
+      new ButtonBuilder().setCustomId(`eqdel|si|${datos}`).setStyle(ButtonStyle.Danger).setLabel('Eliminar equipo').setEmoji('🗑️'),
+    ];
+    if (mensajes) {
+      botones.push(new ButtonBuilder().setCustomId(`eqdel|msg|${datos}`).setStyle(ButtonStyle.Danger)
+        .setLabel(`Eliminar y borrar ${mensajes} mensajes del bot`).setEmoji('🧹'));
+    }
+    botones.push(new ButtonBuilder().setCustomId(`eqdel|no|${datos}`).setStyle(ButtonStyle.Secondary).setLabel('Cancelar'));
+
+    return interaction.reply({
+      content: `⚠️ **¿Seguro que quieres eliminar ${equipo.nombre}?**\n`
+        + `Se borran sus ${jugadores} jugador(es), sus tareas y su configuración. **No se puede deshacer.**\n`
+        + 'Los canales de Discord NO se borran. Esta confirmación vence en 2 minutos.',
+      components: [new ActionRowBuilder().addComponents(botones)],
+      flags: MessageFlags.Ephemeral,
+    });
   },
 
   async 'equipo-modos'(interaction) {
@@ -1883,7 +1944,16 @@ const manejadores = {
     }
     await jugadoresCol.deleteOne({ _id: jugador._id });
     await tareasCol.deleteMany({ puuid: jugador.puuid, estado: 'activa' });
-    return interaction.reply(`🗑️ **${riotId.nombre}#${riotId.tag}** ya no está en **${equipo.nombre}**.`);
+
+    if (!interaction.options.getBoolean('borrar_mensajes')) {
+      return interaction.reply(`🗑️ **${riotId.nombre}#${riotId.tag}** ya no está en **${equipo.nombre}**.`);
+    }
+    // Solo los mensajes que hablan ÚNICAMENTE de él: las tarjetas de partidas en equipo se conservan
+    const suyos = (await mensajesCol.find({ equipoId: equipo._id }).toArray())
+      .filter((m) => m.puuids?.length === 1 && m.puuids[0] === jugador.puuid);
+    await interaction.reply(`🗑️ **${riotId.nombre}#${riotId.tag}** ya no está en **${equipo.nombre}**. 🧹 Borrando sus mensajes…`);
+    const borrados = await borrarMensajesDelBot(suyos);
+    await interaction.followUp({ content: `🧹 Listo: borré ${borrados} mensaje(s) de **${riotId.nombre}#${riotId.tag}**.`, flags: MessageFlags.Ephemeral }).catch(() => {});
   },
 
   async vincular(interaction) {
@@ -1995,6 +2065,7 @@ const manejadores = {
     const mensaje = await construirMensajePartida({ equipo, resumen, modo, resultados: [resultado], prueba: true });
 
     const enviado = await enviarAviso(equipo, mensaje, { conPing: false });
+    if (enviado) await registrarMensaje(equipo, enviado, [jugador.puuid], 'prueba');
     obtenerRangos(resumen, 'alta').catch(() => {}); // deja listo el Scoreboard mientras lees la tarjeta
     return interaction.editReply(
       enviado
@@ -2026,7 +2097,7 @@ const manejadores = {
       .setColor(COLORES.info)
       .setTitle('🤖 Comandos del bot')
       .addFields(
-        { name: '👑 Admins', value: '`/equipo-crear` · `/equipo-modos` (qué partidas mostrar) · `/equipo-tareas` (canal aparte para tareas) · `/equipo-eliminar` · `/probar`' },
+        { name: '👑 Admins', value: '`/equipo-crear` · `/equipo-modos` (qué partidas mostrar) · `/equipo-tareas` (canal aparte para tareas) · `/equipo-eliminar` (con confirmación) · `/probar`' },
         { name: '🎯 Coaches (en el canal de su equipo)', value: '`/agregar` · `/quitar` · `/vincular` (enlaza su Discord)\n`/tarea crear` · `/tarea cancelar`' },
         { name: '👥 Todos (en cualquier canal)', value: '`/roster equipo:…` · `/tarea lista equipo:…` · `/equipos` · `/ayuda`' },
         { name: '📬 Avisos automáticos', value: 'SoloQ, Flex y normales. Si varios del mismo equipo juegan juntos, sale una sola tarjeta en **dorado** 🌟.' },
@@ -2035,6 +2106,42 @@ const manejadores = {
     return interaction.reply({ embeds: [embed] }); // pública: así todos ven cómo usar el bot
   },
 };
+
+// --- Confirmación de /equipo-eliminar ---
+
+async function manejarConfirmacionEliminar(interaction) {
+  const [, modo, usuarioId, momento, ...resto] = interaction.customId.split('|');
+  const nombreLower = resto.join('|');
+  if (interaction.user.id !== usuarioId) {
+    return interaction.reply({ content: '⛔ Solo quien usó /equipo-eliminar puede confirmarlo.', flags: MessageFlags.Ephemeral });
+  }
+  if (modo === 'no') return interaction.update({ content: '✅ Cancelado: no se eliminó nada.', components: [] });
+  if (Date.now() - Number(momento) > 2 * 60_000) {
+    return interaction.update({ content: '⌛ La confirmación venció. Vuelve a usar /equipo-eliminar.', components: [] });
+  }
+
+  const equipo = await equiposCol.findOne({ guildId: interaction.guildId, nombreLower });
+  if (!equipo) return interaction.update({ content: 'Ese equipo ya no existe.', components: [] });
+
+  const { deletedCount } = await jugadoresCol.deleteMany({ equipoId: equipo._id });
+  await tareasCol.deleteMany({ equipoId: equipo._id });
+  await equiposCol.deleteOne({ _id: equipo._id });
+  console.log(`🗑️ Equipo "${equipo.nombre}" eliminado (${deletedCount} jugadores) por ${interaction.user.tag ?? interaction.user.id}`);
+
+  await interaction.update({
+    content: `🗑️ Equipo **${equipo.nombre}** eliminado junto con ${deletedCount} jugador(es).`
+      + (modo === 'msg' ? '\n🧹 Borrando los mensajes del bot…' : '\nSi ya no usarán sus canales, puedes borrarlos desde Discord.'),
+    components: [],
+  });
+
+  const registros = await mensajesCol.find({ equipoId: equipo._id }).toArray();
+  if (modo === 'msg') {
+    const borrados = await borrarMensajesDelBot(registros);
+    await interaction.followUp({ content: `🧹 Listo: borré ${borrados} mensaje(s) del bot de **${equipo.nombre}**.`, flags: MessageFlags.Ephemeral }).catch(() => {});
+  } else {
+    await mensajesCol.deleteMany({ equipoId: equipo._id }); // los registros ya no sirven
+  }
+}
 
 // --- Tareas ---
 
@@ -2123,8 +2230,10 @@ async function crearTarea(interaction, equipo) {
     embeds: [embed],
     allowedMentions: { users: menciones },
   };
+  const puuids = jugadores.map((j) => j.puuid);
   if (equipo.canalTareasId && interaction.channelId !== equipo.canalTareasId) {
     const enviado = await enviarAviso(equipo, anuncio, { conPing: false, destino: 'tareas' });
+    if (enviado) await registrarMensaje(equipo, enviado, puuids, 'tareas');
     return responderPrivado(
       interaction,
       enviado
@@ -2132,7 +2241,9 @@ async function crearTarea(interaction, equipo) {
         : `⚠️ La tarea se creó, pero no pude escribir en <#${equipo.canalTareasId}>. Revisa los permisos del bot ahí.`,
     );
   }
-  return interaction.reply(anuncio);
+  await interaction.reply(anuncio);
+  const respuesta = await interaction.fetchReply().catch(() => null);
+  if (respuesta) await registrarMensaje(equipo, respuesta, puuids, 'tareas');
 }
 
 async function listarTareas(interaction, equipo) {
@@ -2265,6 +2376,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
   } else if (interaction.isButton() && interaction.customId.startsWith('sb|')) {
     manejador = manejarBotonScoreboard;
     nombre = 'botón Scoreboard';
+  } else if (interaction.isButton() && interaction.customId.startsWith('eqdel|')) {
+    manejador = manejarConfirmacionEliminar;
+    nombre = 'confirmación de eliminar equipo';
   }
   if (!manejador) return;
 
