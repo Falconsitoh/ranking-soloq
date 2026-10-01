@@ -1603,7 +1603,8 @@ const SIN_EQUIPO = '⚠️ Este canal no pertenece a ningún equipo. Usa el coma
 
 const manejadores = {
   async 'equipo-crear'(interaction) {
-    if (!esAdmin(interaction.member)) return responderPrivado(interaction, '⛔ Solo administradores pueden crear equipos.');
+    // Quién puede usarlo lo controla Discord: por defecto quien tenga "Gestionar servidor", y un admin
+    // puede habilitar a otras personas o roles en Ajustes del servidor → Integraciones → LD Tracker.
 
     const nombre = interaction.options.getString('nombre').trim();
     const canal = interaction.options.getChannel('canal');
@@ -1647,7 +1648,8 @@ const manejadores = {
   },
 
   async 'equipo-eliminar'(interaction) {
-    if (!esAdmin(interaction.member)) return responderPrivado(interaction, '⛔ Solo administradores pueden eliminar equipos.');
+    // Quién puede usarlo lo controla Discord: por defecto quien tenga "Gestionar servidor", y un admin
+    // puede habilitar a otras personas o roles en Ajustes del servidor → Integraciones → LD Tracker.
 
     const nombre = interaction.options.getString('nombre').trim();
     const equipo = await equiposCol.findOne({ guildId: interaction.guildId, nombreLower: nombre.toLowerCase() });
@@ -1660,7 +1662,8 @@ const manejadores = {
   },
 
   async 'equipo-tareas'(interaction) {
-    if (!esAdmin(interaction.member)) return responderPrivado(interaction, '⛔ Solo administradores pueden cambiar los canales de un equipo.');
+    // Quién puede usarlo lo controla Discord: por defecto quien tenga "Gestionar servidor", y un admin
+    // puede habilitar a otras personas o roles en Ajustes del servidor → Integraciones → LD Tracker.
 
     const nombre = interaction.options.getString('equipo').trim();
     const equipo = await equiposCol.findOne({ guildId: interaction.guildId, nombreLower: nombre.toLowerCase() });
@@ -1850,7 +1853,8 @@ const manejadores = {
   // Manda la tarjeta de la última SoloQ ya jugada, por el MISMO camino que los avisos reales.
   // No guarda nada: el seguimiento automático sigue exactamente igual.
   async probar(interaction) {
-    if (!esAdmin(interaction.member)) return responderPrivado(interaction, '⛔ Solo administradores pueden usar /probar.');
+    // Quién puede usarlo lo controla Discord: por defecto quien tenga "Gestionar servidor", y un admin
+    // puede habilitar a otras personas o roles en Ajustes del servidor → Integraciones → LD Tracker.
 
     const equipo = await equipoDelCanal(interaction);
     if (!equipo) return responderPrivado(interaction, SIN_EQUIPO);
