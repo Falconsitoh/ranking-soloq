@@ -63,6 +63,9 @@ const ES_PRINCIPAL = require.main === module;
 const ESCANEO_MINUTOS = Number(process.env.ESCANEO_MINUTOS) || 5;
 // Si Riot aún no actualizó los LP tras una partida, esperamos hasta N escaneos antes de avisar.
 const MAX_ESPERAS_LP = 3;
+// Si Discord no deja enviar una tarjeta (por ejemplo, el bot perdió acceso al canal), se reintenta
+// en los siguientes escaneos en vez de perderla. Pasado este número de intentos (~1 hora), se descarta.
+const MAX_REINTENTOS_AVISO = 12;
 // Modos que se siguen. Se puede limitar en el .env, ej. MODOS=soloq,flex (por defecto: los tres).
 const MODOS = {
   420: { clave: 'soloq', nombre: 'SoloQ', emoji: '🏆', ranked: true },
@@ -1003,8 +1006,19 @@ async function procesarPartida(partidaId, jugador, equipo) {
   if (mostrar) {
     // UNA sola tarjeta para todo el equipo, SOLO en su canal
     const mensaje = await construirMensajePartida({ equipo, resumen, modo, resultados });
-    await enviarAviso(equipo, mensaje);
+    const enviado = await enviarAviso(equipo, mensaje);
+    if (!enviado) {
+      const intentos = (jugador.reintentosAviso ?? 0) + 1;
+      if (intentos < MAX_REINTENTOS_AVISO) {
+        // No se guarda nada: en el próximo escaneo se vuelve a intentar con la misma partida
+        await jugadoresCol.updateOne({ _id: jugador._id }, { $set: { reintentosAviso: intentos } });
+        console.warn(`↻ La tarjeta de ${jugador.nombre}#${jugador.tag} se reintentará en el próximo escaneo (${intentos}/${MAX_REINTENTOS_AVISO}).`);
+        return 'esperar';
+      }
+      console.error(`❌ Se descartó la tarjeta de ${jugador.nombre}#${jugador.tag} tras ${intentos} intentos. Revisa los permisos del bot en el canal de ${equipo.nombre}.`);
+    }
   }
+  for (const r of resultados) await guardarAvancesTareas(r.tareas);
 
   // El avance de tareas va aparte si hay canal de tareas, o si esta partida no se muestra
   if (equipo.canalTareasId || !mostrar) {
@@ -1079,6 +1093,7 @@ async function guardarResultado(resultado, partidaId, resumen) {
     rachas: resultado.rachas,
     racha: resultado.rachas.soloq ?? 0,
     esperasLP: 0,
+    reintentosAviso: 0,
     nombre,
     tag,
     riotIdLower: riotIdEnMinusculas(nombre, tag),
@@ -1121,7 +1136,13 @@ async function enviarAviso(equipo, mensaje, { conPing = true, destino = 'partida
     await canal.send(final);
     return true;
   } catch (err) {
-    console.error(`⚠️ No pude enviar el aviso al canal de ${equipo.nombre}:`, err.message);
+    const servidor = client.guilds.cache.get(equipo.guildId)?.name ?? 'servidor desconocido';
+    const motivo = {
+      50001: 'el bot NO puede ver ese canal (falta "Ver canal")',
+      50013: 'al bot le faltan permisos ahí ("Enviar mensajes", "Insertar enlaces" o "Adjuntar archivos")',
+      10003: 'ese canal ya no existe (lo borraron)',
+    }[err.code] ?? err.message;
+    console.error(`⚠️ No pude enviar al canal de ${equipo.nombre} (${servidor}): ${motivo}.`);
     return false;
   }
 }
@@ -1194,10 +1215,14 @@ async function evaluarTareas(jugador, resumen, p, modo) {
     const completada = progreso >= t.cantidad;
     const cambios = { progreso, partidas: [...(t.partidas ?? []), resumen.id] };
     if (completada) Object.assign(cambios, { estado: 'completada', cerradaEn: new Date() });
-    await tareasCol.updateOne({ _id: t._id, estado: 'activa' }, { $set: cambios });
-    avances.push({ ...t, ...cambios, completada });
+    avances.push({ ...t, ...cambios, completada, cambios });
   }
   return avances;
+}
+
+/** Guarda en MongoDB el avance de tareas calculado (se hace cuando la tarjeta ya salió). */
+async function guardarAvancesTareas(avances = []) {
+  for (const t of avances) await tareasCol.updateOne({ _id: t._id, estado: 'activa' }, { $set: t.cambios });
 }
 
 /** Cierra las tareas vencidas y avisa UNA vez por equipo con todas las que no se cumplieron. */
@@ -1540,7 +1565,8 @@ const comandos = [
 
   new SlashCommandBuilder()
     .setName('roster')
-    .setDescription('Muestra los jugadores y el elo del equipo de este canal'),
+    .setDescription('Muestra los jugadores y el elo de un equipo (funciona en cualquier canal)')
+    .addStringOption((o) => o.setName('equipo').setDescription('Qué equipo (en el canal de un equipo, se usa ese)').setAutocomplete(true)),
 
   new SlashCommandBuilder()
     .setName('probar')
@@ -1576,7 +1602,10 @@ const comandos = [
       ))
       .addBooleanOption((o) => o.setName('ganar').setDescription('¿Solo cuentan las victorias? (por defecto: no)'))
       .addIntegerOption((o) => o.setName('dias').setDescription('Días para cumplirla (por defecto: 7)').setMinValue(1).setMaxValue(60)))
-    .addSubcommand((s) => s.setName('lista').setDescription('Tareas activas y recientes del equipo de este canal'))
+    .addSubcommand((s) => s
+      .setName('lista')
+      .setDescription('Tareas activas y recientes de un equipo (funciona en cualquier canal)')
+      .addStringOption((o) => o.setName('equipo').setDescription('Qué equipo (en el canal de un equipo, se usa ese)').setAutocomplete(true)))
     .addSubcommand((s) => s
       .setName('cancelar')
       .setDescription('Cancela una tarea activa (solo coaches)')
@@ -1599,7 +1628,11 @@ const equipoDelCanal = async (interaction) =>
 
 async function botPuedeEscribir(interaction, canal) {
   const yo = interaction.guild.members.me ?? (await interaction.guild.members.fetchMe());
-  const necesarios = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks];
+  // Las tarjetas llevan imágenes adjuntas (emblema y detalle) y emojis del bot
+  const necesarios = [
+    PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks,
+    PermissionFlagsBits.AttachFiles, PermissionFlagsBits.UseExternalEmojis,
+  ];
   return Boolean(canal.permissionsFor(yo)?.has(necesarios));
 }
 
@@ -1610,7 +1643,7 @@ async function problemaCanalTareas(interaction, canal, equipo) {
     .find((e) => String(e._id) !== String(equipo._id) && (e.canalId === canal.id || e.canalTareasId === canal.id));
   if (otro) return `⚠️ ${canal} ya lo usa el equipo **${otro.nombre}**. Elige otro canal.`;
   if (!(await botPuedeEscribir(interaction, canal))) {
-    return `⚠️ No tengo permiso para ver, escribir o mandar embeds en ${canal}. Dámelos y vuelve a intentar.`;
+    return `⚠️ Me faltan permisos en ${canal}: necesito Ver canal, Enviar mensajes, Insertar enlaces, Adjuntar archivos y Usar emojis externos. Dámelos y vuelve a intentar.`;
   }
   return null;
 }
@@ -1618,6 +1651,25 @@ async function problemaCanalTareas(interaction, canal, equipo) {
 function responderPrivado(interaction, content) {
   if (interaction.deferred || interaction.replied) return interaction.editReply({ content, embeds: [] });
   return interaction.reply({ content, flags: MessageFlags.Ephemeral });
+}
+
+/**
+ * Para comandos de consulta (/roster, /tarea lista) que funcionan en cualquier canal:
+ * 1) el equipo elegido en la opción "equipo"; 2) el equipo de este canal; 3) si el servidor tiene uno solo, ese.
+ * Devuelve { equipo } o { error } con el mensaje para el usuario.
+ */
+async function equipoParaConsulta(interaction) {
+  const nombre = interaction.options.getString('equipo')?.trim();
+  if (nombre) {
+    const elegido = await equiposCol.findOne({ guildId: interaction.guildId, nombreLower: nombre.toLowerCase() });
+    return elegido ? { equipo: elegido } : { error: `No encontré el equipo **${nombre}**. Elígelo de la lista al escribir.` };
+  }
+  const delCanal = await equipoDelCanal(interaction);
+  if (delCanal) return { equipo: delCanal };
+  const todos = await equiposCol.find({ guildId: interaction.guildId }).toArray();
+  if (todos.length === 1) return { equipo: todos[0] };
+  if (!todos.length) return { error: 'Este servidor aún no tiene equipos. Un admin puede crearlos con /equipo-crear.' };
+  return { error: `¿De qué equipo? Elige uno en la opción \`equipo\`: ${todos.map((e) => `**${e.nombre}**`).join(', ')}.` };
 }
 
 const SIN_EQUIPO = '⚠️ Este canal no pertenece a ningún equipo. Usa el comando dentro del canal de tu equipo.';
@@ -1637,7 +1689,7 @@ const manejadores = {
 
     // Verificamos que el bot pueda escribir en los canales ANTES de guardarlos
     if (!(await botPuedeEscribir(interaction, canal))) {
-      return responderPrivado(interaction, `⚠️ No tengo permiso para ver, escribir o mandar embeds en ${canal}. Dámelos y vuelve a intentar.`);
+      return responderPrivado(interaction, `⚠️ Me faltan permisos en ${canal}: necesito Ver canal, Enviar mensajes, Insertar enlaces, Adjuntar archivos y Usar emojis externos. Dámelos y vuelve a intentar.`);
     }
     if (await equiposCol.findOne({ guildId: interaction.guildId, canalTareasId: canal.id })) {
       return responderPrivado(interaction, `⚠️ ${canal} ya es el canal de tareas de otro equipo. Elige otro canal para las partidas.`);
@@ -1859,8 +1911,8 @@ const manejadores = {
   },
 
   async roster(interaction) {
-    const equipo = await equipoDelCanal(interaction);
-    if (!equipo) return responderPrivado(interaction, SIN_EQUIPO);
+    const { equipo, error } = await equipoParaConsulta(interaction);
+    if (error) return responderPrivado(interaction, error);
 
     const jugadores = await jugadoresCol.find({ equipoId: equipo._id }).toArray();
     if (!jugadores.length) {
@@ -1952,10 +2004,16 @@ const manejadores = {
   },
 
   async tarea(interaction) {
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'lista') {
+      // Consultar tareas se puede desde cualquier canal
+      const { equipo, error } = await equipoParaConsulta(interaction);
+      if (error) return responderPrivado(interaction, error);
+      return listarTareas(interaction, equipo);
+    }
+    // Crear o cancelar sí se hace desde el canal del equipo (así queda claro de qué equipo es)
     const equipo = await equipoDelCanal(interaction);
     if (!equipo) return responderPrivado(interaction, SIN_EQUIPO);
-    const sub = interaction.options.getSubcommand();
-    if (sub === 'lista') return listarTareas(interaction, equipo);
     if (!puedeGestionar(interaction.member, equipo)) {
       return responderPrivado(interaction, `⛔ Solo los coaches de **${equipo.nombre}** pueden manejar tareas aquí.`);
     }
@@ -1970,10 +2028,11 @@ const manejadores = {
       .addFields(
         { name: '👑 Admins', value: '`/equipo-crear` · `/equipo-modos` (qué partidas mostrar) · `/equipo-tareas` (canal aparte para tareas) · `/equipo-eliminar` · `/probar`' },
         { name: '🎯 Coaches (en el canal de su equipo)', value: '`/agregar` · `/quitar` · `/vincular` (enlaza su Discord)\n`/tarea crear` · `/tarea cancelar`' },
-        { name: '👥 Todos', value: '`/roster` · `/equipos` · `/tarea lista` · `/ayuda`' },
+        { name: '👥 Todos (en cualquier canal)', value: '`/roster equipo:…` · `/tarea lista equipo:…` · `/equipos` · `/ayuda`' },
         { name: '📬 Avisos automáticos', value: 'SoloQ, Flex y normales. Si varios del mismo equipo juegan juntos, sale una sola tarjeta en **dorado** 🌟.' },
-      );
-    return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      )
+      .setFooter({ text: 'En el canal de un equipo no hace falta elegir el equipo: se usa ese' });
+    return interaction.reply({ embeds: [embed] }); // pública: así todos ven cómo usar el bot
   },
 };
 
