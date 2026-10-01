@@ -76,6 +76,16 @@ const MODOS_ACTIVOS = new Set((process.env.MODOS || 'soloq,flex,normal').toLower
 /** Datos del modo de una cola, o null si ese modo no se sigue (ARAM, Arena...). */
 const modoDeCola = (cola) => (MODOS[cola] && MODOS_ACTIVOS.has(MODOS[cola].clave) ? MODOS[cola] : null);
 const NOMBRE_MODO_TAREA = { cualquiera: 'cualquier modo', soloq: 'SoloQ', flex: 'Flex', ranked: 'ranked', normal: 'normales' };
+// Qué partidas muestra cada equipo en su canal (se elige al crear el equipo o con /equipo-modos)
+const OPCIONES_MODOS = {
+  todas: { nombre: 'Todas (SoloQ, Flex y normales)', claves: ['soloq', 'flex', 'normal'] },
+  ranked: { nombre: 'SoloQ y Flex', claves: ['soloq', 'flex'] },
+  soloq: { nombre: 'Solo SoloQ', claves: ['soloq'] },
+  flex: { nombre: 'Solo Flex', claves: ['flex'] },
+  normal: { nombre: 'Solo normales', claves: ['normal'] },
+};
+const ELECCIONES_MODOS = Object.entries(OPCIONES_MODOS).map(([value, o]) => ({ name: o.nombre, value }));
+const opcionModos = (equipo) => OPCIONES_MODOS[equipo.modos] ?? OPCIONES_MODOS.todas;
 // Cuántas partidas procesadas recuerda cada jugador (para no anunciar dos veces la misma).
 const MAX_PROCESADAS = 20;
 // Partidas recientes en memoria, y días que se guardan en MongoDB para el botón de Scoreboard.
@@ -987,20 +997,25 @@ async function procesarPartida(partidaId, jugador, equipo) {
   // Tareas de los coaches
   for (const r of resultados) r.tareas = await evaluarTareas(r.jugador, resumen, r.p, modo);
 
-  // UNA sola tarjeta para todo el equipo, SOLO en su canal
-  const mensaje = await construirMensajePartida({ equipo, resumen, modo, resultados });
-  await enviarAviso(equipo, mensaje);
+  // ¿El equipo eligió mostrar este modo? Aunque no lo muestre, LP, rachas y tareas se actualizan igual.
+  const mostrar = opcionModos(equipo).claves.includes(modo.clave);
 
-  // Si el equipo tiene canal de tareas, el avance va allá (y no en la tarjeta)
-  if (equipo.canalTareasId) {
+  if (mostrar) {
+    // UNA sola tarjeta para todo el equipo, SOLO en su canal
+    const mensaje = await construirMensajePartida({ equipo, resumen, modo, resultados });
+    await enviarAviso(equipo, mensaje);
+  }
+
+  // El avance de tareas va aparte si hay canal de tareas, o si esta partida no se muestra
+  if (equipo.canalTareasId || !mostrar) {
     const avance = construirEmbedAvanceTareas({ resumen, modo, resultados });
     if (avance) await enviarAviso(equipo, { embeds: [avance] }, { conPing: false, destino: 'tareas' });
   }
 
   for (const r of resultados) await guardarResultado(r, partidaId, resumen);
 
-  // Precarga los rangos del Scoreboard para que el botón abra al instante
-  await obtenerRangos(resumen).catch(() => {});
+  // Precarga los rangos del Scoreboard para que el botón abra al instante (solo si hubo tarjeta)
+  if (mostrar) await obtenerRangos(resumen).catch(() => {});
   return 'ok';
 }
 
@@ -1478,7 +1493,15 @@ const comandos = [
     .addChannelOption((o) => o.setName('canal').setDescription('Canal donde llegarán los avisos de este equipo').addChannelTypes(ChannelType.GuildText).setRequired(true))
     .addRoleOption((o) => o.setName('rol_coach').setDescription('Rol que podrá agregar y quitar jugadores de este equipo').setRequired(true))
     .addRoleOption((o) => o.setName('rol_ping').setDescription('(Opcional) Rol que se menciona en cada aviso de este equipo'))
-    .addChannelOption((o) => o.setName('canal_tareas').setDescription('(Opcional) Canal aparte solo para las tareas de este equipo').addChannelTypes(ChannelType.GuildText)),
+    .addChannelOption((o) => o.setName('canal_tareas').setDescription('(Opcional) Canal aparte solo para las tareas de este equipo').addChannelTypes(ChannelType.GuildText))
+    .addStringOption((o) => o.setName('modos').setDescription('(Opcional) Qué partidas mostrar (por defecto: todas)').addChoices(...ELECCIONES_MODOS)),
+
+  new SlashCommandBuilder()
+    .setName('equipo-modos')
+    .setDescription('Elige qué partidas muestra un equipo: SoloQ, Flex, normales o todas (solo admins)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addStringOption((o) => o.setName('equipo').setDescription('Nombre del equipo').setRequired(true).setAutocomplete(true))
+    .addStringOption((o) => o.setName('modos').setDescription('Qué partidas mostrar').setRequired(true).addChoices(...ELECCIONES_MODOS)),
 
   new SlashCommandBuilder()
     .setName('equipo-tareas')
@@ -1633,6 +1656,7 @@ const manejadores = {
         rolCoachId: rolCoach.id,
         rolPingId: rolPing?.id ?? null,
         canalTareasId: canalTareas?.id ?? null,
+        modos: interaction.options.getString('modos') ?? 'todas',
         creadoEn: new Date(),
       });
     } catch (err) {
@@ -1643,7 +1667,7 @@ const manejadores = {
     }
 
     return interaction.reply(
-      `✅ Equipo **${nombre}** creado.\nPartidas en ${canal}${canalTareas ? ` · Tareas en ${canalTareas}` : ''} · Coaches: ${rolCoach}${rolPing ? ` · Ping: ${rolPing}` : ''}`,
+      `✅ Equipo **${nombre}** creado.\nPartidas en ${canal}${canalTareas ? ` · Tareas en ${canalTareas}` : ''} · Coaches: ${rolCoach}${rolPing ? ` · Ping: ${rolPing}` : ''}\n🎮 Muestra: **${OPCIONES_MODOS[interaction.options.getString('modos') ?? 'todas'].nombre}**`,
     );
   },
 
@@ -1659,6 +1683,20 @@ const manejadores = {
     await tareasCol.deleteMany({ equipoId: equipo._id });
     await equiposCol.deleteOne({ _id: equipo._id });
     return interaction.reply(`🗑️ Equipo **${equipo.nombre}** eliminado junto con ${deletedCount} jugador(es).`);
+  },
+
+  async 'equipo-modos'(interaction) {
+    // Quién puede usarlo lo controla Discord (por defecto, quien tenga "Gestionar servidor")
+    const nombre = interaction.options.getString('equipo').trim();
+    const equipo = await equiposCol.findOne({ guildId: interaction.guildId, nombreLower: nombre.toLowerCase() });
+    if (!equipo) return responderPrivado(interaction, `No encontré el equipo **${nombre}**. Elígelo de la lista.`);
+
+    const modos = interaction.options.getString('modos');
+    await equiposCol.updateOne({ _id: equipo._id }, { $set: { modos } });
+    return interaction.reply(
+      `🎮 Listo: **${equipo.nombre}** ahora muestra **${OPCIONES_MODOS[modos].nombre}** en <#${equipo.canalId}>.\n`
+      + 'Las demás partidas no salen en el canal, pero sus LP, rachas y tareas se siguen contando igual.',
+    );
   },
 
   async 'equipo-tareas'(interaction) {
@@ -1693,7 +1731,7 @@ const manejadores = {
     const totalPorEquipo = new Map(conteos.map((c) => [String(c._id), c.total]));
 
     const lineas = lista.map((e) =>
-      `**${e.nombre}** → <#${e.canalId}>${e.canalTareasId ? ` · 📋 <#${e.canalTareasId}>` : ''} · Coach: <@&${e.rolCoachId}> · ${totalPorEquipo.get(String(e._id)) ?? 0} jugadores`,
+      `**${e.nombre}** → <#${e.canalId}>${e.canalTareasId ? ` · 📋 <#${e.canalTareasId}>` : ''} · Coach: <@&${e.rolCoachId}> · ${totalPorEquipo.get(String(e._id)) ?? 0} jugadores · 🎮 ${opcionModos(e).nombre}`,
     );
     const embed = new EmbedBuilder().setColor(COLORES.info).setTitle('🏟️ Equipos de la organización').setDescription(lineas.join('\n'));
     return interaction.reply({ embeds: [embed] });
@@ -1930,7 +1968,7 @@ const manejadores = {
       .setColor(COLORES.info)
       .setTitle('🤖 Comandos del bot')
       .addFields(
-        { name: '👑 Admins', value: '`/equipo-crear` · `/equipo-tareas` (canal aparte para tareas) · `/equipo-eliminar` · `/probar`' },
+        { name: '👑 Admins', value: '`/equipo-crear` · `/equipo-modos` (qué partidas mostrar) · `/equipo-tareas` (canal aparte para tareas) · `/equipo-eliminar` · `/probar`' },
         { name: '🎯 Coaches (en el canal de su equipo)', value: '`/agregar` · `/quitar` · `/vincular` (enlaza su Discord)\n`/tarea crear` · `/tarea cancelar`' },
         { name: '👥 Todos', value: '`/roster` · `/equipos` · `/tarea lista` · `/ayuda`' },
         { name: '📬 Avisos automáticos', value: 'SoloQ, Flex y normales. Si varios del mismo equipo juegan juntos, sale una sola tarjeta en **dorado** 🌟.' },
