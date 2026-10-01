@@ -40,6 +40,7 @@ const {
   Client,
   GatewayIntentBits,
   Events,
+  InteractionContextType,
   EmbedBuilder,
   SlashCommandBuilder,
   PermissionFlagsBits,
@@ -83,7 +84,8 @@ const DIAS_GUARDAR_PARTIDAS = 7;
 // Carpeta donde se guardan íconos, emblemas y fuentes descargados (se crea sola).
 const CARPETA_CACHE = path.join(__dirname, 'cache');
 
-const VARIABLES_FALTANTES = Object.entries({ DISCORD_TOKEN, GUILD_ID, RIOT_API_KEY, MONGO_URI })
+// GUILD_ID ya no es obligatorio: el bot funciona en todos los servidores donde lo inviten
+const VARIABLES_FALTANTES = Object.entries({ DISCORD_TOKEN, RIOT_API_KEY, MONGO_URI })
   .filter(([, valor]) => !valor)
   .map(([nombre]) => nombre);
 
@@ -864,9 +866,10 @@ async function escanear() {
 
   try {
     // Se leen en cada escaneo: si un admin crea un equipo, entra en el siguiente ciclo sin reiniciar.
-    const equipos = await equiposCol.find({ guildId: GUILD_ID }).toArray();
+    // Todos los servidores: cada equipo y cada jugador ya están separados por servidor
+    const equipos = await equiposCol.find({}).toArray();
     const equiposPorId = new Map(equipos.map((e) => [String(e._id), e]));
-    const lista = await jugadoresCol.find({ guildId: GUILD_ID }).toArray();
+    const lista = await jugadoresCol.find({}).toArray();
 
     for (const { _id } of lista) {
       // Se relee fresco: si jugó en equipo con otro, ese otro ya pudo dejarle la partida procesada.
@@ -1164,7 +1167,8 @@ const barraProgreso = (actual, total) => {
 
 /** Suma la partida a las tareas activas del jugador que cumpla. Devuelve los avances para la tarjeta. */
 async function evaluarTareas(jugador, resumen, p, modo) {
-  const activas = await tareasCol.find({ puuid: jugador.puuid, estado: 'activa' }).toArray();
+  // Solo las tareas de SU equipo (el mismo jugador puede estar en equipos de distintos servidores)
+  const activas = await tareasCol.find({ puuid: jugador.puuid, estado: 'activa', equipoId: jugador.equipoId }).toArray();
   const avances = [];
   for (const t of activas) {
     // Solo cuentan partidas terminadas después de crear la tarea y antes de que venza
@@ -1184,7 +1188,7 @@ async function evaluarTareas(jugador, resumen, p, modo) {
 /** Cierra las tareas vencidas y avisa UNA vez por equipo con todas las que no se cumplieron. */
 async function revisarVencimientos(equiposPorId) {
   const ahora = Date.now();
-  const activas = await tareasCol.find({ guildId: GUILD_ID, estado: 'activa' }).toArray();
+  const activas = await tareasCol.find({ estado: 'activa' }).toArray();
   const vencidas = activas.filter((t) => new Date(t.venceEn).getTime() < ahora);
   if (!vencidas.length) return;
 
@@ -1433,7 +1437,7 @@ async function manejarBotonScoreboard(interaction) {
 
   // Quiénes de la partida son del mismo equipo que el jugador del aviso (para marcarlos 🌟)
   const puuids = resumen.participantes.map((p) => p.puuid);
-  const conocidos = await jugadoresCol.find({ puuid: { $in: puuids } }).toArray();
+  const conocidos = await jugadoresCol.find({ guildId: interaction.guildId, puuid: { $in: puuids } }).toArray();
   const delAviso = conocidos.find((j) => j.puuid === resumen.participantes[Number(indice)]?.puuid);
   const delEquipo = new Set(
     delAviso ? conocidos.filter((j) => String(j.equipoId) === String(delAviso.equipoId)).map((j) => j.puuid) : [],
@@ -1559,6 +1563,8 @@ const comandos = [
     .setName('ayuda')
     .setDescription('Qué hace cada comando del bot'),
 ];
+// Los comandos solo existen dentro de servidores (no en mensajes directos al bot)
+for (const comando of comandos) comando.setContexts(InteractionContextType.Guild);
 
 // --- Helpers de permisos y respuestas ---
 
@@ -2111,11 +2117,18 @@ client.once(Events.ClientReady, async (bot) => {
   console.log(`🤖 Conectado como ${bot.user.tag}`);
 
   try {
-    const servidor = await bot.guilds.fetch(GUILD_ID);
-    await servidor.commands.set(comandos.map((c) => c.toJSON()));
-    console.log(`✅ ${comandos.length} comandos registrados en "${servidor.name}"`);
+    // Comandos GLOBALES: aparecen en todos los servidores donde esté el bot
+    await bot.application.commands.set(comandos.map((c) => c.toJSON()));
+    const servidores = [...bot.guilds.cache.values()].map((g) => g.name);
+    console.log(`✅ ${comandos.length} comandos registrados para ${servidores.length} servidor(es): ${servidores.join(', ')}`);
+
+    // Las versiones anteriores los registraban solo en un servidor: se borran para que no salgan repetidos
+    if (GUILD_ID) {
+      const anterior = await bot.guilds.fetch(GUILD_ID).catch(() => null);
+      if (anterior) await anterior.commands.set([]).catch(() => {});
+    }
   } catch (err) {
-    console.error('❌ No pude registrar los comandos. Revisa GUILD_ID y que el bot esté invitado al servidor.', err.message);
+    console.error('❌ No pude registrar los comandos en Discord:', err.message);
     if (ES_PRINCIPAL) process.exit(1);
     return; // dentro del dashboard: el bot se queda quieto, pero el dashboard sigue funcionando
   }
@@ -2132,7 +2145,11 @@ client.once(Events.ClientReady, async (bot) => {
   setInterval(escanear, ESCANEO_MINUTOS * 60_000);
 });
 
+client.on(Events.GuildCreate, (servidor) => console.log(`➕ Me agregaron al servidor "${servidor.name}"`));
+client.on(Events.GuildDelete, (servidor) => console.log(`➖ Me sacaron del servidor "${servidor.name}"`));
+
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.inGuild()) return; // nada por mensaje directo
   // Sugerencias mientras se escribe (jugadores, campeones, tareas)
   if (interaction.isAutocomplete()) {
     await manejarAutocompletado(interaction).catch((err) => console.warn('⚠️ Autocompletado:', err.message));
