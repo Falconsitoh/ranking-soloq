@@ -78,7 +78,7 @@ const MODOS = {
 const MODOS_ACTIVOS = new Set((process.env.MODOS || 'soloq,flex,normal').toLowerCase().split(',').map((m) => m.trim()));
 /** Datos del modo de una cola, o null si ese modo no se sigue (ARAM, Arena...). */
 const modoDeCola = (cola) => (MODOS[cola] && MODOS_ACTIVOS.has(MODOS[cola].clave) ? MODOS[cola] : null);
-const NOMBRE_MODO_TAREA = { cualquiera: 'cualquier modo', soloq: 'SoloQ', flex: 'Flex', ranked: 'ranked', normal: 'normales' };
+const NOMBRE_MODO_TAREA = { cualquiera: 'cualquier modo', soloq: 'SoloQ', flex: 'Flex', ranked: 'ranked (SoloQ o Flex)', normal: 'normales' };
 // Qué partidas muestra cada equipo en su canal (se elige al crear el equipo o con /equipo-modos)
 const OPCIONES_MODOS = {
   todas: { nombre: 'Todas (SoloQ, Flex y normales)', claves: ['soloq', 'flex', 'normal'] },
@@ -1186,7 +1186,7 @@ function describirTarea(t) {
     default: texto = `${verbo} ${partidas}`;
   }
   if (t.victoria && ['kda', 'cs', 'vision'].includes(t.tipo)) texto += ' (ganadas)';
-  if (t.modo && t.modo !== 'cualquiera') texto += ` en ${NOMBRE_MODO_TAREA[t.modo]}`;
+  texto += ` en ${NOMBRE_MODO_TAREA[t.modo] ?? NOMBRE_MODO_TAREA.cualquiera}`; // siempre visible en qué partidas cuenta
   return texto;
 }
 
@@ -1634,6 +1634,11 @@ const comandos = [
         { name: 'Partidas con visión mínima', value: 'vision' },
       ))
       .addIntegerOption((o) => o.setName('cantidad').setDescription('Cuántas partidas').setRequired(true).setMinValue(1).setMaxValue(50))
+      .addStringOption((o) => o.setName('modo').setDescription('En qué partidas cuenta la tarea').setRequired(true).addChoices(
+        { name: 'Solo SoloQ', value: 'soloq' }, { name: 'Solo Flex', value: 'flex' },
+        { name: 'Ranked (SoloQ o Flex)', value: 'ranked' }, { name: 'Solo normales', value: 'normal' },
+        { name: 'Cualquier modo', value: 'cualquiera' },
+      ))
       .addStringOption((o) => o.setName('jugador').setDescription('Jugador del equipo (vacío = TODO el equipo)').setAutocomplete(true))
       .addStringOption((o) => o.setName('campeon').setDescription('Para "Jugar con un campeón"').setAutocomplete(true))
       .addStringOption((o) => o.setName('rol').setDescription('Para "Jugar en un rol"').addChoices(
@@ -1641,10 +1646,6 @@ const comandos = [
         { name: 'ADC', value: 'BOTTOM' }, { name: 'Support', value: 'UTILITY' },
       ))
       .addNumberOption((o) => o.setName('valor').setDescription('Para KDA, CS/min o visión: el mínimo (ej. 3, 7.5, 40)').setMinValue(0))
-      .addStringOption((o) => o.setName('modo').setDescription('En qué modo cuenta (por defecto: cualquiera)').addChoices(
-        { name: 'Cualquiera', value: 'cualquiera' }, { name: 'SoloQ', value: 'soloq' }, { name: 'Flex', value: 'flex' },
-        { name: 'Ranked (Solo o Flex)', value: 'ranked' }, { name: 'Normales', value: 'normal' },
-      ))
       .addBooleanOption((o) => o.setName('ganar').setDescription('¿Solo cuentan las victorias? (por defecto: no)'))
       .addIntegerOption((o) => o.setName('dias').setDescription('Días para cumplirla (por defecto: 7)').setMinValue(1).setMaxValue(60)))
     .addSubcommand((s) => s
