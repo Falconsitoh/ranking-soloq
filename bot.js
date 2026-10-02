@@ -89,6 +89,19 @@ const OPCIONES_MODOS = {
 };
 const ELECCIONES_MODOS = Object.entries(OPCIONES_MODOS).map(([value, o]) => ({ name: o.nombre, value }));
 const opcionModos = (equipo) => OPCIONES_MODOS[equipo.modos] ?? OPCIONES_MODOS.todas;
+// Niveles del champion pool de cada jugador (/pool)
+const NIVELES_POOL = {
+  S: { emoji: '🟥', nombre: 'Main' },
+  A: { emoji: '🟧', nombre: 'Muy cómodo' },
+  B: { emoji: '🟨', nombre: 'Lo juega bien' },
+  C: { emoji: '🟩', nombre: 'En práctica' },
+};
+const MAX_CAMPEONES_POOL = 40;
+const OPCIONES_ROL = [
+  { name: 'Top', value: 'TOP' }, { name: 'Jungla', value: 'JUNGLE' }, { name: 'Mid', value: 'MIDDLE' },
+  { name: 'ADC', value: 'BOTTOM' }, { name: 'Support', value: 'UTILITY' },
+];
+const NOMBRE_ROL = Object.fromEntries(OPCIONES_ROL.map((o) => [o.value, o.name])); // 'MIDDLE' → 'Mid'
 // Cuántas partidas procesadas recuerda cada jugador (para no anunciar dos veces la misma).
 const MAX_PROCESADAS = 20;
 // Partidas recientes en memoria, y días que se guardan en MongoDB para el botón de Scoreboard.
@@ -1112,6 +1125,14 @@ async function guardarResultado(resultado, partidaId, resumen) {
     cambios.perfilSoloQ = resultado.perfiles.soloq;
     cambios.perfilFlex = resultado.perfiles.flex;
   }
+  // Estadísticas por campeón en ranked: sirven para comparar su champion pool con lo que juega de verdad
+  if (resultado.modo?.ranked) {
+    const stats = { ...(jugador.stats ?? {}) };
+    const clave = String(p.campeonId);
+    const s = stats[clave] ?? { j: 0, g: 0, k: 0, d: 0, a: 0 };
+    stats[clave] = { j: s.j + 1, g: s.g + (p.gano ? 1 : 0), k: s.k + p.k, d: s.d + p.d, a: s.a + p.a };
+    cambios.stats = stats;
+  }
   await jugadoresCol.updateOne({ _id: jugador._id }, { $set: cambios });
 
   // Si se cambió el Riot ID, sus tareas activas muestran el nombre nuevo
@@ -1658,6 +1679,32 @@ const comandos = [
       .addStringOption((o) => o.setName('tarea').setDescription('Elige la tarea de la lista').setRequired(true).setAutocomplete(true))),
 
   new SlashCommandBuilder()
+    .setName('pool')
+    .setDescription('Champion pool de los jugadores: su tier list de campeones')
+    .addSubcommand((s) => s
+      .setName('agregar')
+      .setDescription('Agrega o mueve un campeón en el pool (el propio jugador o su coach)')
+      .addStringOption((o) => o.setName('campeon').setDescription('Campeón').setRequired(true).setAutocomplete(true))
+      .addStringOption((o) => o.setName('tier').setDescription('Nivel').setRequired(true).addChoices(
+        ...Object.entries(NIVELES_POOL).map(([valor, n]) => ({ name: `${valor} · ${n.nombre}`, value: valor })),
+      ))
+      .addStringOption((o) => o.setName('rol').setDescription('(Opcional) En qué rol lo juega').addChoices(...OPCIONES_ROL))
+      .addStringOption((o) => o.setName('jugador').setDescription('(Coaches) De qué jugador; vacío = tú mismo').setAutocomplete(true)))
+    .addSubcommand((s) => s
+      .setName('quitar')
+      .setDescription('Quita un campeón del pool')
+      .addStringOption((o) => o.setName('campeon').setDescription('Campeón').setRequired(true).setAutocomplete(true))
+      .addStringOption((o) => o.setName('jugador').setDescription('(Coaches) De qué jugador; vacío = tú mismo').setAutocomplete(true)))
+    .addSubcommand((s) => s
+      .setName('ver')
+      .setDescription('Muestra el champion pool de un jugador (cualquier canal)')
+      .addStringOption((o) => o.setName('jugador').setDescription('Jugador; vacío = tú mismo').setAutocomplete(true)))
+    .addSubcommand((s) => s
+      .setName('equipo')
+      .setDescription('Pools de todo un equipo de un vistazo (cualquier canal)')
+      .addStringOption((o) => o.setName('equipo').setDescription('Qué equipo (en el canal de un equipo, se usa ese)').setAutocomplete(true))),
+
+  new SlashCommandBuilder()
     .setName('ayuda')
     .setDescription('Qué hace cada comando del bot'),
 ];
@@ -2093,6 +2140,52 @@ const manejadores = {
     return crearTarea(interaction, equipo);
   },
 
+  async pool(interaction) {
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'equipo') {
+      const { equipo, error } = await equipoParaConsulta(interaction);
+      if (error) return responderPrivado(interaction, error);
+      return mostrarPoolEquipo(interaction, equipo);
+    }
+
+    const { jugador, error } = await jugadorParaPool(interaction);
+    if (error) return responderPrivado(interaction, error);
+    if (sub === 'ver') return interaction.reply({ embeds: [await construirEmbedPool(jugador)] });
+
+    // Agregar o quitar: el propio jugador (con su Discord enlazado) o un coach de su equipo
+    const equipo = await equiposCol.findOne({ _id: jugador.equipoId });
+    const esElMismo = Boolean(jugador.discordId) && jugador.discordId === interaction.user.id;
+    if (!esElMismo && !(equipo && puedeGestionar(interaction.member, equipo))) {
+      return responderPrivado(interaction, '⛔ Solo el propio jugador (con su Discord enlazado) o un coach de su equipo puede cambiar su pool.');
+    }
+
+    await cargarDatosEstaticos();
+    const campeon = buscarCampeon(interaction.options.getString('campeon'));
+    if (!campeon) return responderPrivado(interaction, '⚠️ Elige el campeón de la lista al escribir.');
+    const anterior = jugador.pool ?? [];
+    const pool = anterior.filter((c) => c.campeonId !== campeon.id);
+    const quien = `**${jugador.nombre}#${jugador.tag}**`;
+
+    if (sub === 'quitar') {
+      if (pool.length === anterior.length) return responderPrivado(interaction, `**${campeon.nombre}** no está en el pool de ${quien}.`);
+      await jugadoresCol.updateOne({ _id: jugador._id }, { $set: { pool } });
+      return responderPrivado(interaction, `🗑️ Quité a **${campeon.nombre}** del pool de ${quien}.`);
+    }
+
+    if (pool.length >= MAX_CAMPEONES_POOL) {
+      return responderPrivado(interaction, `⚠️ El pool ya tiene ${MAX_CAMPEONES_POOL} campeones. Quita alguno con /pool quitar.`);
+    }
+    const tier = interaction.options.getString('tier');
+    pool.push({ campeonId: campeon.id, tier, rol: interaction.options.getString('rol') ?? null });
+    await jugadoresCol.updateOne({ _id: jugador._id }, { $set: { pool } });
+    // En privado, para que agregar varios campeones seguidos no llene el canal
+    return interaction.reply({
+      content: `${NIVELES_POOL[tier].emoji} **${campeon.nombre}** quedó en **${tier}** en el pool de ${quien}. Muéstralo a todos con \`/pool ver\`.`,
+      embeds: [await construirEmbedPool({ ...jugador, pool })],
+      flags: MessageFlags.Ephemeral,
+    });
+  },
+
   async ayuda(interaction) {
     const embed = new EmbedBuilder()
       .setColor(COLORES.info)
@@ -2100,13 +2193,104 @@ const manejadores = {
       .addFields(
         { name: '👑 Admins', value: '`/equipo-crear` · `/equipo-modos` (qué partidas mostrar) · `/equipo-tareas` (canal aparte para tareas) · `/equipo-eliminar` (con confirmación) · `/probar`' },
         { name: '🎯 Coaches (en el canal de su equipo)', value: '`/agregar` · `/quitar` · `/vincular` (enlaza su Discord)\n`/tarea crear` · `/tarea cancelar`' },
-        { name: '👥 Todos (en cualquier canal)', value: '`/roster equipo:…` · `/tarea lista equipo:…` · `/equipos` · `/ayuda`' },
+        { name: '👥 Todos (en cualquier canal)', value: '`/roster equipo:…` · `/tarea lista equipo:…` · `/pool ver` · `/pool equipo` · `/equipos` · `/ayuda`\n`/pool agregar` · `/pool quitar` (tu propio champion pool)' },
         { name: '📬 Avisos automáticos', value: 'SoloQ, Flex y normales. Si varios del mismo equipo juegan juntos, sale una sola tarjeta en **dorado** 🌟.' },
       )
       .setFooter({ text: 'En el canal de un equipo no hace falta elegir el equipo: se usa ese' });
     return interaction.reply({ embeds: [embed] }); // pública: así todos ven cómo usar el bot
   },
 };
+
+// --- Champion pool ---
+
+/** El jugador de la opción "jugador" (cualquier equipo del servidor), o el propio usuario si tiene su Discord enlazado. */
+async function jugadorParaPool(interaction) {
+  const texto = interaction.options.getString('jugador')?.trim();
+  if (texto) {
+    const riotId = separarRiotId(texto);
+    let jugador = riotId
+      ? await jugadoresCol.findOne({ guildId: interaction.guildId, riotIdLower: riotIdEnMinusculas(riotId.nombre, riotId.tag) })
+      : null;
+    if (!jugador && !riotId) {
+      const candidatos = (await jugadoresCol.find({ guildId: interaction.guildId }).toArray())
+        .filter((j) => normalizar(j.nombre) === normalizar(texto));
+      if (candidatos.length === 1) jugador = candidatos[0];
+    }
+    return jugador ? { jugador } : { error: `No encontré a **${texto}** en este servidor. Elígelo de la lista al escribir.` };
+  }
+  const propio = await jugadoresCol.findOne({ guildId: interaction.guildId, discordId: interaction.user.id });
+  return propio
+    ? { jugador: propio }
+    : { error: 'No encontré tu cuenta: elige un jugador en la opción `jugador`, o pídele a tu coach que enlace tu Discord con /vincular.' };
+}
+
+async function construirEmbedPool(jugador) {
+  await cargarDatosEstaticos();
+  const stats = jugador.stats ?? {};
+  const pool = jugador.pool ?? [];
+  const nombreDe = (id) => estatico.campeones.get(Number(id)) ?? `#${id}`;
+  const conIcono = (id, texto) => (emojiCampeon(id) ? `${emojiCampeon(id)} ${texto}` : texto);
+  const winrate = (s) => Math.round((s.g / s.j) * 100);
+
+  const embed = new EmbedBuilder()
+    .setColor(COLORES.info)
+    .setTitle(`🏆 Champion pool de ${jugador.nombre}#${jugador.tag}`)
+    .setFooter({ text: 'S Main · A Muy cómodo · B Lo juega bien · C En práctica · P = partidas en ranked' });
+  if (jugador.perfilSoloQ) embed.setThumbnail(urlEmblema(jugador.perfilSoloQ.tier));
+
+  // 1) Lo que el jugador DICE que juega (su tier list)
+  for (const [tier, nivel] of Object.entries(NIVELES_POOL)) {
+    const campeones = pool.filter((c) => c.tier === tier);
+    if (!campeones.length) continue;
+    const lineas = campeones.map((c) => {
+      const s = stats[String(c.campeonId)];
+      const rol = c.rol ? ` · ${NOMBRE_ROL[c.rol]}` : '';
+      const datos = s ? ` · ${s.j}P ${winrate(s)}%` : '';
+      return conIcono(c.campeonId, `**${nombreDe(c.campeonId)}**${rol}${datos}`);
+    });
+    embed.addFields({ name: `${nivel.emoji} ${tier} · ${nivel.nombre}`, value: lineas.join('\n').slice(0, 1024) });
+  }
+
+  // 2) Lo que REALMENTE juega en ranked, según el bot
+  const masJugados = Object.entries(stats).sort((a, b) => b[1].j - a[1].j).slice(0, 5);
+  if (masJugados.length) {
+    const enPool = new Set(pool.map((c) => String(c.campeonId)));
+    const lineas = masJugados.map(([id, s]) => {
+      const kda = ((s.k + s.a) / Math.max(1, s.d)).toFixed(1);
+      const aviso = enPool.has(id) ? '' : ' · ⚠️ no está en su pool';
+      return conIcono(id, `**${nombreDe(id)}** · ${s.j}P · ${winrate(s)}% WR · KDA ${kda}${aviso}`);
+    });
+    embed.addFields({ name: '📊 Más jugados en ranked (desde que el bot lo sigue)', value: lineas.join('\n').slice(0, 1024) });
+  }
+
+  if (!embed.data.fields?.length) embed.setDescription('Todavía no tiene campeones en su pool. Se agregan con `/pool agregar`.');
+  return embed;
+}
+
+async function mostrarPoolEquipo(interaction, equipo) {
+  await cargarDatosEstaticos();
+  const jugadores = (await jugadoresCol.find({ equipoId: equipo._id }).toArray())
+    .sort((a, b) => (b.perfilSoloQ?.abs ?? -1) - (a.perfilSoloQ?.abs ?? -1));
+  if (!jugadores.length) return responderPrivado(interaction, `**${equipo.nombre}** aún no tiene jugadores.`);
+
+  const corto = (c) => emojiCampeon(c.campeonId) || estatico.campeones.get(c.campeonId) || `#${c.campeonId}`;
+  const lineas = jugadores.map((j) => {
+    const pool = j.pool ?? [];
+    const niveles = ['S', 'A']
+      .map((tier) => {
+        const campeones = pool.filter((c) => c.tier === tier);
+        return campeones.length ? `${NIVELES_POOL[tier].emoji} ${campeones.map(corto).join(' · ')}` : null;
+      })
+      .filter(Boolean);
+    return `**${j.nombre}#${j.tag}**\n${niveles.length ? niveles.join('   ') : '_sin pool todavía_'}`;
+  });
+  const embed = new EmbedBuilder()
+    .setColor(COLORES.info)
+    .setTitle(`🏆 Champion pools de ${equipo.nombre}`)
+    .setDescription(lineas.join('\n\n').slice(0, 4000))
+    .setFooter({ text: 'Aquí salen solo S y A · el pool completo de cada uno con /pool ver' });
+  return interaction.reply({ embeds: [embed] });
+}
 
 // --- Confirmación de /equipo-eliminar ---
 
@@ -2301,6 +2485,13 @@ async function manejarAutocompletado(interaction) {
       .filter(([, nombre]) => normalizar(nombre).includes(buscado))
       .sort((a, b) => a[1].localeCompare(b[1]))
       .map(([id, nombre]) => ({ name: nombre, value: String(id) }));
+  } else if (foco.name === 'jugador' && interaction.commandName === 'pool') {
+    // En /pool se puede ver a cualquier jugador del servidor, de cualquier equipo
+    const jugadores = await jugadoresCol.find({ guildId: interaction.guildId }).toArray();
+    opciones = jugadores
+      .map((j) => `${j.nombre}#${j.tag}`.slice(0, 100))
+      .filter((id) => normalizar(id).includes(buscado))
+      .map((id) => ({ name: id, value: id }));
   } else {
     const equipo = await equipoDelCanal(interaction);
     if (equipo && (foco.name === 'jugador' || foco.name === 'riot_id')) {
