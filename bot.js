@@ -706,6 +706,10 @@ let partidasCol;
 let tareasCol;
 let mensajesCol; // qué mensajes mandó el bot y de quién eran (para poder limpiarlos después)
 const DIAS_GUARDAR_MENSAJES = 180;
+// Limpieza del canal de tareas: el progreso se borra apenas la tarea se cierra, y el aviso de
+// "completada" (o "no cumplida") y el anuncio original se borran tras estos días. Cambiable en el .env.
+const DIAS_BORRAR_TAREAS = Number(process.env.DIAS_BORRAR_TAREAS) || 2;
+const enDias = (dias) => new Date(Date.now() + dias * 86_400_000);
 
 async function conectarMongo() {
   mongo = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 10_000 });
@@ -920,6 +924,7 @@ async function escanear() {
     }
 
     await revisarVencimientos(equiposPorId);
+    await borrarMensajesProgramados();
     const segundos = Math.round((Date.now() - inicio) / 1000);
     console.log(`🔎 Escaneo listo: ${lista.length} jugadores en ${segundos}s`);
   } catch (err) {
@@ -1044,9 +1049,16 @@ async function procesarPartida(partidaId, jugador, equipo) {
     const avance = construirEmbedAvanceTareas({ resumen, modo, resultados });
     const enviadoAvance = avance && (await enviarAviso(equipo, { embeds: [avance] }, { conPing: false, destino: 'tareas' }));
     if (enviadoAvance) {
-      await registrarMensaje(equipo, enviadoAvance, resultados.filter((r) => r.tareas?.length).map((r) => r.jugador.puuid), 'tareas');
+      const avances = resultados.flatMap((r) => r.tareas ?? []);
+      await registrarMensaje(equipo, enviadoAvance, resultados.filter((r) => r.tareas?.length).map((r) => r.jugador.puuid), 'avance', {
+        tareaIds: avances.map((t) => t._id),
+        borrarEn: avances.some((t) => t.completada) ? enDias(DIAS_BORRAR_TAREAS) : null,
+      });
     }
   }
+  // Tareas que se completaron con esta partida: se limpian sus avisos de progreso anteriores
+  const completadas = resultados.flatMap((r) => r.tareas ?? []).filter((t) => t.completada).map((t) => t._id);
+  await limpiarAvisosDeTareas(equipo, completadas);
 
   for (const r of resultados) await guardarResultado(r, partidaId, resumen);
 
@@ -1277,12 +1289,53 @@ async function revisarVencimientos(equiposPorId) {
         tareas.map((t) => `❌ **${t.jugadorNombre}** · ${describirTarea(t)} — ${t.progreso ?? 0}/${t.cantidad}`).join('\n').slice(0, 4000),
       );
     const enviado = await enviarAviso(equipo, { embeds: [embed] }, { conPing: false, destino: 'tareas' });
-    if (enviado) await registrarMensaje(equipo, enviado, tareas.map((t) => t.puuid), 'tareas');
+    if (enviado) {
+      await registrarMensaje(equipo, enviado, tareas.map((t) => t.puuid), 'vencidas', {
+        tareaIds: tareas.map((t) => t._id),
+        borrarEn: enDias(DIAS_BORRAR_TAREAS),
+      });
+    }
+    await limpiarAvisosDeTareas(equipo, tareas.map((t) => t._id));
   }
 }
 
+/**
+ * Cuando una tarea se cierra (completada, vencida o cancelada), sus avisos de progreso ya no sirven:
+ * se borran al instante. El anuncio original se programa para borrarse en DIAS_BORRAR_TAREAS días.
+ * Un mensaje que todavía menciona alguna tarea activa no se toca.
+ */
+async function limpiarAvisosDeTareas(equipo, tareaIdsCerradas) {
+  if (!tareaIdsCerradas?.length) return;
+  const cerradas = new Set(tareaIdsCerradas.map(String));
+  const mensajes = (await mensajesCol.find({ equipoId: equipo._id }).toArray())
+    .filter((m) => m.tareaIds?.some((id) => cerradas.has(String(id))));
+  if (!mensajes.length) return;
+
+  const ids = new Map();
+  for (const m of mensajes) for (const id of m.tareaIds) ids.set(String(id), id);
+  const activas = new Set(
+    (await tareasCol.find({ _id: { $in: [...ids.values()] }, estado: 'activa' }).toArray()).map((t) => String(t._id)),
+  );
+
+  const borrarYa = [];
+  for (const m of mensajes) {
+    if (m.tareaIds.some((id) => activas.has(String(id)))) continue; // todavía habla de una tarea activa
+    if (m.tipo === 'avance' && !m.borrarEn) borrarYa.push(m); // progreso viejo: ya no hace falta
+    else if (!m.borrarEn) await mensajesCol.updateOne({ _id: m._id }, { $set: { borrarEn: enDias(DIAS_BORRAR_TAREAS) } });
+  }
+  if (borrarYa.length) await borrarMensajesDelBot(borrarYa);
+}
+
+/** Borra los avisos de tareas cuyo plazo de limpieza ya pasó (se revisa en cada escaneo). */
+async function borrarMensajesProgramados() {
+  const vencidos = await mensajesCol.find({ borrarEn: { $lte: new Date() } }).toArray();
+  if (!vencidos.length) return;
+  const borrados = await borrarMensajesDelBot(vencidos);
+  if (borrados) console.log(`🧹 Limpieza del canal de tareas: ${borrados} mensaje(s) viejo(s) borrado(s)`);
+}
+
 /** Anota un mensaje del bot: en qué canal quedó, de qué equipo es y de qué jugadores habla. */
-async function registrarMensaje(equipo, mensaje, puuids, tipo) {
+async function registrarMensaje(equipo, mensaje, puuids, tipo, { tareaIds = [], borrarEn = null } = {}) {
   if (!mensaje?.id || !mensaje.channelId) return;
   await mensajesCol
     .insertOne({
@@ -1292,6 +1345,8 @@ async function registrarMensaje(equipo, mensaje, puuids, tipo) {
       equipoId: equipo._id,
       puuids: [...new Set(puuids)],
       tipo,
+      tareaIds,
+      borrarEn,
       creadoEn: new Date(),
     })
     .catch(() => {});
@@ -1991,7 +2046,9 @@ const manejadores = {
       return responderPrivado(interaction, `No encontré a **${riotId.nombre}#${riotId.tag}** en **${equipo.nombre}**. Revisa con /roster.`);
     }
     await jugadoresCol.deleteOne({ _id: jugador._id });
-    await tareasCol.deleteMany({ puuid: jugador.puuid, estado: 'activa' });
+    const susTareas = await tareasCol.find({ puuid: jugador.puuid, estado: 'activa', equipoId: equipo._id }).toArray();
+    await tareasCol.deleteMany({ puuid: jugador.puuid, estado: 'activa', equipoId: equipo._id });
+    await limpiarAvisosDeTareas(equipo, susTareas.map((t) => t._id));
 
     if (!interaction.options.getBoolean('borrar_mensajes')) {
       return interaction.reply(`🗑️ **${riotId.nombre}#${riotId.tag}** ya no está en **${equipo.nombre}**.`);
@@ -2388,15 +2445,18 @@ async function crearTarea(interaction, equipo) {
     if (!jugadores.length) return responderPrivado(interaction, `**${equipo.nombre}** aún no tiene jugadores.`);
   }
 
+  const tareaIds = [];
   for (const j of jugadores) {
-    await tareasCol.insertOne({
+    const doc = {
       ...tarea,
       codigo: crypto.randomBytes(4).toString('hex'),
       jugadorId: j._id,
       puuid: j.puuid,
       jugadorNombre: `${j.nombre}#${j.tag}`,
       partidas: [],
-    });
+    };
+    const { insertedId } = (await tareasCol.insertOne(doc)) ?? {};
+    tareaIds.push(insertedId ?? doc._id);
   }
 
   // Asignar una tarea SÍ avisa al jugador (una sola vez), si tiene su Discord enlazado
@@ -2418,7 +2478,7 @@ async function crearTarea(interaction, equipo) {
   const puuids = jugadores.map((j) => j.puuid);
   if (equipo.canalTareasId && interaction.channelId !== equipo.canalTareasId) {
     const enviado = await enviarAviso(equipo, anuncio, { conPing: false, destino: 'tareas' });
-    if (enviado) await registrarMensaje(equipo, enviado, puuids, 'tareas');
+    if (enviado) await registrarMensaje(equipo, enviado, puuids, 'anuncio', { tareaIds });
     return responderPrivado(
       interaction,
       enviado
@@ -2428,7 +2488,7 @@ async function crearTarea(interaction, equipo) {
   }
   await interaction.reply(anuncio);
   const respuesta = await interaction.fetchReply().catch(() => null);
-  if (respuesta) await registrarMensaje(equipo, respuesta, puuids, 'tareas');
+  if (respuesta) await registrarMensaje(equipo, respuesta, puuids, 'anuncio', { tareaIds });
 }
 
 async function listarTareas(interaction, equipo) {
@@ -2465,6 +2525,7 @@ async function cancelarTarea(interaction, equipo) {
   const tarea = await tareasCol.findOne({ equipoId: equipo._id, codigo, estado: 'activa' });
   if (!tarea) return responderPrivado(interaction, 'No encontré esa tarea activa. Elígela de la lista.');
   await tareasCol.updateOne({ _id: tarea._id }, { $set: { estado: 'cancelada', cerradaEn: new Date() } });
+  await limpiarAvisosDeTareas(equipo, [tarea._id]);
   return interaction.reply(`🗑️ Tarea cancelada: **${tarea.jugadorNombre}** · ${describirTarea(tarea)}`);
 }
 
