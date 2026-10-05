@@ -46,6 +46,7 @@ const {
   PermissionFlagsBits,
   ChannelType,
   MessageFlags,
+  StringSelectMenuBuilder,
 } = require('discord.js');
 
 // ═════════════════════════ 1. CONFIGURACIÓN ═════════════════════════
@@ -102,6 +103,8 @@ const OPCIONES_ROL = [
   { name: 'ADC', value: 'BOTTOM' }, { name: 'Support', value: 'UTILITY' },
 ];
 const NOMBRE_ROL = Object.fromEntries(OPCIONES_ROL.map((o) => [o.value, o.name])); // 'MIDDLE' → 'Mid'
+const ICONO_ROL = { TOP: '🛡️', JUNGLE: '🌲', MIDDLE: '✨', BOTTOM: '🏹', UTILITY: '💚' };
+const ORDEN_ROL = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY'];
 // Cuántas partidas procesadas recuerda cada jugador (para no anunciar dos veces la misma).
 const MAX_PROCESADAS = 20;
 // Partidas recientes en memoria, y días que se guardan en MongoDB para el botón de Scoreboard.
@@ -2367,29 +2370,143 @@ async function construirEmbedPool(jugador) {
   return embed;
 }
 
+/** El rol que más se repite en su pool (para ordenar al equipo como una alineación). */
+function rolPrincipal(jugador) {
+  const cuenta = {};
+  for (const c of jugador.pool ?? []) if (c.rol) cuenta[c.rol] = (cuenta[c.rol] ?? 0) + 1;
+  return Object.entries(cuenta).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+}
+
+/** Íconos de campeones en fila; si no caben en el espacio, termina con "+N". */
+function filaDeIconos(campeones, espacio) {
+  let texto = '';
+  for (let i = 0; i < campeones.length; i++) {
+    const c = campeones[i];
+    const pieza = emojiCampeon(c.campeonId) || `\`${estatico.campeones.get(c.campeonId) ?? c.campeonId}\``;
+    const resto = campeones.length - i - 1;
+    const reserva = resto ? ` +${resto}`.length : 0;
+    if ((texto ? texto.length + 1 : 0) + pieza.length + reserva > espacio) return `${texto} **+${campeones.length - i}**`;
+    texto += (texto ? ' ' : '') + pieza;
+  }
+  return texto;
+}
+
+/** Bloque de un jugador en /pool equipo: rol, elo y una fila por tier (S, A, B y C). */
+function campoPoolJugador(j) {
+  const rol = rolPrincipal(j);
+  const pool = j.pool ?? [];
+  const tiers = Object.entries(NIVELES_POOL).filter(([tier]) => pool.some((c) => c.tier === tier));
+  const elo = j.perfilSoloQ ? `${emojiRango(j.perfilSoloQ.tier)} ${formatearElo(j.perfilSoloQ)}`.trim() : '⚪ Sin clasificar';
+
+  // Discord deja 1024 caracteres por bloque: el espacio se reparte según lo que necesita cada tier,
+  // así un tier con muchos campeones aprovecha lo que no usan los demás
+  const grupos = tiers.map(([tier, nivel]) => {
+    const campeones = pool.filter((c) => c.tier === tier);
+    const necesita = campeones.reduce((n, c) => n + (emojiCampeon(c.campeonId) || `\`${estatico.campeones.get(c.campeonId) ?? c.campeonId}\``).length + 1, 0);
+    return { tier, nivel, campeones, necesita };
+  });
+  let disponible = 1000 - elo.length - grupos.length * 14;
+  const espacio = new Map();
+  [...grupos].sort((a, b) => a.necesita - b.necesita).forEach((g, i, lista) => {
+    const parte = Math.min(g.necesita, Math.floor(disponible / (lista.length - i)));
+    espacio.set(g.tier, parte);
+    disponible -= parte;
+  });
+  const filas = grupos.map((g) => `${g.nivel.emoji} **${g.tier}**  ${filaDeIconos(g.campeones, espacio.get(g.tier))}`);
+  return {
+    name: `${rol ? `${ICONO_ROL[rol]} ` : '👤 '}${j.nombre}#${j.tag}${rol ? ` · ${NOMBRE_ROL[rol]}` : ''} · ${pool.length} campeones`.slice(0, 256),
+    value: [elo, ...filas].join('\n').slice(0, 1024),
+  };
+}
+
+const largoCampo = (c) => c.name.length + c.value.length;
+
+/**
+ * Reparte los campos en varios mensajes si hace falta: Discord permite 25 campos por embed
+ * y 6000 caracteres por mensaje (los íconos ocupan bastante texto por dentro).
+ */
+function empaquetarCampos(campos, { titulo, descripcion, pie }) {
+  const mensajes = [];
+  let actual = [];
+  let largo = titulo.length + descripcion.length + pie.length;
+  for (const campo of campos) {
+    if (actual.length && (actual.length >= 25 || largo + largoCampo(campo) > 5600)) {
+      mensajes.push(actual);
+      actual = [];
+      largo = titulo.length + pie.length + 20;
+    }
+    actual.push(campo);
+    largo += largoCampo(campo);
+  }
+  if (actual.length || !mensajes.length) mensajes.push(actual);
+  return mensajes.map((grupo, i) => {
+    const embed = new EmbedBuilder()
+      .setColor(COLORES.info)
+      .setTitle(i === 0 ? titulo : `${titulo} (continuación)`)
+      .setFooter({ text: pie });
+    if (i === 0) embed.setDescription(descripcion);
+    if (grupo.length) embed.addFields(grupo);
+    return embed;
+  });
+}
+
 async function mostrarPoolEquipo(interaction, equipo) {
   await cargarDatosEstaticos();
-  const jugadores = (await jugadoresCol.find({ equipoId: equipo._id }).toArray())
-    .sort((a, b) => (b.perfilSoloQ?.abs ?? -1) - (a.perfilSoloQ?.abs ?? -1));
-  if (!jugadores.length) return responderPrivado(interaction, `**${equipo.nombre}** aún no tiene jugadores.`);
+  const todos = await jugadoresCol.find({ equipoId: equipo._id }).toArray();
+  if (!todos.length) return responderPrivado(interaction, `**${equipo.nombre}** aún no tiene jugadores.`);
 
-  const corto = (c) => emojiCampeon(c.campeonId) || estatico.campeones.get(c.campeonId) || `#${c.campeonId}`;
-  const lineas = jugadores.map((j) => {
-    const pool = j.pool ?? [];
-    const niveles = ['S', 'A']
-      .map((tier) => {
-        const campeones = pool.filter((c) => c.tier === tier);
-        return campeones.length ? `${NIVELES_POOL[tier].emoji} ${campeones.map(corto).join(' · ')}` : null;
-      })
-      .filter(Boolean);
-    return `**${j.nombre}#${j.tag}**\n${niveles.length ? niveles.join('   ') : '_sin pool todavía_'}`;
+  // Ordenados como una alineación (Top → Support) y, dentro de cada rol, por elo
+  const posicion = (j) => { const r = rolPrincipal(j); return r ? ORDEN_ROL.indexOf(r) : ORDEN_ROL.length; };
+  const conPool = todos
+    .filter((j) => j.pool?.length)
+    .sort((a, b) => posicion(a) - posicion(b) || (b.perfilSoloQ?.abs ?? -1) - (a.perfilSoloQ?.abs ?? -1));
+  const sinPool = todos.filter((j) => !j.pool?.length);
+
+  const campos = conPool.map(campoPoolJugador);
+  if (sinPool.length) {
+    campos.push({
+      name: `⏳ Sin pool todavía (${sinPool.length})`,
+      value: sinPool.map((j) => `${j.nombre}#${j.tag}`).join(' · ').slice(0, 1024),
+    });
+  }
+  const leyenda = Object.entries(NIVELES_POOL).map(([tier, n]) => `${n.emoji} **${tier}** ${n.nombre}`).join('  ·  ');
+  const embeds = empaquetarCampos(campos, {
+    titulo: `🏆 Champion pools · ${equipo.nombre}`,
+    descripcion: `${leyenda}\n**${conPool.length}** de **${todos.length}** jugadores ya armaron su pool.`,
+    pie: 'Elige a un jugador abajo para ver su pool con nombres y estadísticas',
   });
-  const embed = new EmbedBuilder()
-    .setColor(COLORES.info)
-    .setTitle(`🏆 Champion pools de ${equipo.nombre}`)
-    .setDescription(lineas.join('\n\n').slice(0, 4000))
-    .setFooter({ text: 'Aquí salen solo S y A · el pool completo de cada uno con /pool ver' });
-  return interaction.reply({ embeds: [embed] });
+
+  // Menú para abrir el pool detallado de cualquiera (sale solo para quien lo elige)
+  const componentes = [];
+  if (conPool.length) {
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId('poolver')
+      .setPlaceholder('🔎 Ver el pool detallado de…')
+      .addOptions(conPool.slice(0, 25).map((j) => {
+        const rol = rolPrincipal(j);
+        return {
+          label: `${j.nombre}#${j.tag}`.slice(0, 100),
+          value: j.riotIdLower.slice(0, 100),
+          description: `${rol ? `${NOMBRE_ROL[rol]} · ` : ''}${j.pool.length} campeones · ${nombreRango(j.perfilSoloQ)}`.slice(0, 100),
+          emoji: rol ? ICONO_ROL[rol] : '👤',
+        };
+      }));
+    componentes.push(new ActionRowBuilder().addComponents(menu));
+  }
+
+  // Si el equipo es muy grande, se manda en varios mensajes; el menú va en el último
+  for (let i = 0; i < embeds.length; i++) {
+    const mensaje = { embeds: [embeds[i]], components: i === embeds.length - 1 ? componentes : [] };
+    if (i === 0) await interaction.reply(mensaje);
+    else await interaction.followUp(mensaje);
+  }
+}
+
+/** Menú de /pool equipo: muestra el pool completo del jugador elegido, solo a quien lo pidió. */
+async function manejarSelectPool(interaction) {
+  const jugador = await jugadoresCol.findOne({ guildId: interaction.guildId, riotIdLower: interaction.values[0] });
+  if (!jugador) return interaction.reply({ content: 'Ese jugador ya no está registrado.', flags: MessageFlags.Ephemeral });
+  return interaction.reply({ embeds: [await construirEmbedPool(jugador)], flags: MessageFlags.Ephemeral });
 }
 
 // --- Confirmación de /equipo-eliminar ---
@@ -2689,6 +2806,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
   } else if (interaction.isButton() && interaction.customId.startsWith('eqdel|')) {
     manejador = manejarConfirmacionEliminar;
     nombre = 'confirmación de eliminar equipo';
+  } else if (interaction.isStringSelectMenu() && interaction.customId === 'poolver') {
+    manejador = manejarSelectPool;
+    nombre = 'menú del pool';
   }
   if (!manejador) return;
 
