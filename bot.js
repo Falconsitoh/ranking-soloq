@@ -1194,14 +1194,32 @@ const normalizar = (texto) =>
   (texto ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/gi, '').toLowerCase();
 
 /** Acepta el ID que manda el autocompletado o el nombre escrito a mano ("Ahri", "kaisa", "Kai'Sa"). */
+// Apodos comunes de la comunidad → id del campeón
+const APODOS_CAMPEON = {
+  mf: 21, tf: 4, j4: 59, jarvan: 59, asol: 136, mundo: 36, drmundo: 36, nunu: 20, kog: 96, kogmaw: 96,
+  cass: 69, tk: 223, lb: 7, xin: 5, yi: 11, maestroyi: 11, masteryi: 11, ez: 81, kha: 121, vlad: 37,
+  heimer: 74, gp: 41, fiddle: 9, blitz: 53, naut: 111, morde: 82, kass: 38, kata: 55, cait: 51,
+  trist: 18, ali: 12, mao: 57, noc: 56, eve: 28, kayle: 10, sej: 113, renek: 58, tahm: 223, aatrox: 266,
+};
+
+/** Reconoce un campeón por id, nombre exacto, apodo, o por un trozo del nombre si es inconfundible. */
 function buscarCampeon(texto) {
   if (!texto) return null;
   const id = Number(texto);
   if (estatico.campeones.has(id)) return { id, nombre: estatico.campeones.get(id) };
   const buscado = normalizar(texto);
-  for (const [campeonId, nombre] of estatico.campeones) {
-    if (normalizar(nombre) === buscado) return { id: campeonId, nombre };
-  }
+  if (!buscado) return null;
+  const lista = [...estatico.campeones.entries()].map(([campeonId, nombre]) => ({ id: campeonId, nombre, n: normalizar(nombre) }));
+
+  const exacto = lista.find((c) => c.n === buscado);
+  if (exacto) return { id: exacto.id, nombre: exacto.nombre };
+  const apodo = APODOS_CAMPEON[buscado];
+  if (apodo && estatico.campeones.has(apodo)) return { id: apodo, nombre: estatico.campeones.get(apodo) };
+  // "nunu" → Nunu y Willump · "jarv" → Jarvan IV: solo si hay UNA opción posible
+  const empiezan = buscado.length >= 3 ? lista.filter((c) => c.n.startsWith(buscado)) : [];
+  if (empiezan.length === 1) return { id: empiezan[0].id, nombre: empiezan[0].nombre };
+  const contienen = buscado.length >= 4 ? lista.filter((c) => c.n.includes(buscado)) : [];
+  if (contienen.length === 1) return { id: contienen[0].id, nombre: contienen[0].nombre };
   return null;
 }
 
@@ -1738,8 +1756,8 @@ const comandos = [
     .setDescription('Champion pool de los jugadores: su tier list de campeones')
     .addSubcommand((s) => s
       .setName('agregar')
-      .setDescription('Agrega o mueve un campeón en el pool (el propio jugador o su coach)')
-      .addStringOption((o) => o.setName('campeon').setDescription('Campeón').setRequired(true).setAutocomplete(true))
+      .setDescription('Agrega o mueve campeones en el pool, varios a la vez (el propio jugador o su coach)')
+      .addStringOption((o) => o.setName('campeones').setDescription('Uno o varios separados por coma: Sivir, Jhin, Xayah').setRequired(true).setAutocomplete(true))
       .addStringOption((o) => o.setName('tier').setDescription('Nivel').setRequired(true).addChoices(
         ...Object.entries(NIVELES_POOL).map(([valor, n]) => ({ name: `${valor} · ${n.nombre}`, value: valor })),
       ))
@@ -1747,8 +1765,8 @@ const comandos = [
       .addStringOption((o) => o.setName('jugador').setDescription('(Coaches) De qué jugador; vacío = tú mismo').setAutocomplete(true)))
     .addSubcommand((s) => s
       .setName('quitar')
-      .setDescription('Quita un campeón del pool')
-      .addStringOption((o) => o.setName('campeon').setDescription('Campeón').setRequired(true).setAutocomplete(true))
+      .setDescription('Quita campeones del pool, varios a la vez')
+      .addStringOption((o) => o.setName('campeones').setDescription('Uno o varios separados por coma: Sivir, Jhin').setRequired(true).setAutocomplete(true))
       .addStringOption((o) => o.setName('jugador').setDescription('(Coaches) De qué jugador; vacío = tú mismo').setAutocomplete(true)))
     .addSubcommand((s) => s
       .setName('ver')
@@ -2217,30 +2235,43 @@ const manejadores = {
     }
 
     await cargarDatosEstaticos();
-    const campeon = buscarCampeon(interaction.options.getString('campeon'));
-    if (!campeon) return responderPrivado(interaction, '⚠️ Elige el campeón de la lista al escribir.');
-    const anterior = jugador.pool ?? [];
-    const pool = anterior.filter((c) => c.campeonId !== campeon.id);
+    const { campeones, desconocidos } = leerListaCampeones(interaction.options.getString('campeones'));
+    const noReconocidos = desconocidos.length ? `\n❓ No reconocí: ${desconocidos.map((d) => `**${d}**`).join(', ')} (revisa cómo se escriben).` : '';
+    if (!campeones.length) return responderPrivado(interaction, `⚠️ No reconocí ningún campeón. Sepáralos con coma: \`Sivir, Jhin, Xayah\`.${noReconocidos}`);
+
     const quien = `**${jugador.nombre}#${jugador.tag}**`;
+    const nombres = (lista) => lista.map((c) => `**${c.nombre}**`).join(', ');
+    const ids = new Set(campeones.map((c) => c.id));
+    const anterior = jugador.pool ?? [];
 
     if (sub === 'quitar') {
-      if (pool.length === anterior.length) return responderPrivado(interaction, `**${campeon.nombre}** no está en el pool de ${quien}.`);
+      const quitados = campeones.filter((c) => anterior.some((p) => p.campeonId === c.id));
+      if (!quitados.length) return responderPrivado(interaction, `Ninguno de esos campeones está en el pool de ${quien}.${noReconocidos}`);
+      const pool = anterior.filter((p) => !ids.has(p.campeonId));
       await jugadoresCol.updateOne({ _id: jugador._id }, { $set: { pool } });
-      return responderPrivado(interaction, `🗑️ Quité a **${campeon.nombre}** del pool de ${quien}.`);
+      return responderPrivado(interaction, `🗑️ Quité del pool de ${quien}: ${nombres(quitados)}.${noReconocidos}`);
     }
 
-    if (pool.length >= MAX_CAMPEONES_POOL) {
-      return responderPrivado(interaction, `⚠️ El pool ya tiene ${MAX_CAMPEONES_POOL} campeones. Quita alguno con /pool quitar.`);
-    }
+    // Los que ya estaban se mueven al nuevo tier; los nuevos entran hasta llenar el máximo
     const tier = interaction.options.getString('tier');
-    pool.push({ campeonId: campeon.id, tier, rol: interaction.options.getString('rol') ?? null });
+    const rol = interaction.options.getString('rol') ?? null;
+    const pool = anterior.filter((p) => !ids.has(p.campeonId));
+    const movidos = campeones.filter((c) => anterior.some((p) => p.campeonId === c.id));
+    const sinEspacio = [];
+    for (const c of campeones) {
+      if (pool.length >= MAX_CAMPEONES_POOL) { sinEspacio.push(c); continue; }
+      pool.push({ campeonId: c.id, tier, rol });
+    }
     await jugadoresCol.updateOne({ _id: jugador._id }, { $set: { pool } });
-    // En privado, para que agregar varios campeones seguidos no llene el canal
-    return interaction.reply({
-      content: `${NIVELES_POOL[tier].emoji} **${campeon.nombre}** quedó en **${tier}** en el pool de ${quien}. Muéstralo a todos con \`/pool ver\`.`,
-      embeds: [await construirEmbedPool({ ...jugador, pool })],
-      flags: MessageFlags.Ephemeral,
-    });
+
+    const agregados = campeones.filter((c) => !sinEspacio.includes(c));
+    let texto = `${NIVELES_POOL[tier].emoji} Quedaron en **${tier}**${rol ? ` (${NOMBRE_ROL[rol]})` : ''} en el pool de ${quien}: ${nombres(agregados)}.`;
+    if (movidos.length) texto += `\n↕️ Ya estaban y se movieron: ${nombres(movidos)}.`;
+    if (sinEspacio.length) texto += `\n⚠️ No entraron (máximo ${MAX_CAMPEONES_POOL}): ${nombres(sinEspacio)}.`;
+    texto += noReconocidos;
+    texto += '\nMuéstralo a todos con `/pool ver`.';
+    // En privado, para que armar el pool no llene el canal
+    return interaction.reply({ content: texto.slice(0, 2000), embeds: [await construirEmbedPool({ ...jugador, pool })], flags: MessageFlags.Ephemeral });
   },
 
   async ayuda(interaction) {
@@ -2259,6 +2290,18 @@ const manejadores = {
 };
 
 // --- Champion pool ---
+
+/** "Sivir, jhin, Xayah" → campeones reconocidos (sin repetir) + lo que no se reconoció. */
+function leerListaCampeones(texto = '') {
+  const campeones = [];
+  const desconocidos = [];
+  for (const parte of texto.split(/[,;\n]+/).map((p) => p.trim()).filter(Boolean)) {
+    const campeon = buscarCampeon(parte);
+    if (!campeon) desconocidos.push(parte.slice(0, 30));
+    else if (!campeones.some((c) => c.id === campeon.id)) campeones.push(campeon);
+  }
+  return { campeones, desconocidos };
+}
 
 /** El jugador de la opción "jugador" (cualquier equipo del servidor), o el propio usuario si tiene su Discord enlazado. */
 async function jugadorParaPool(interaction) {
@@ -2535,7 +2578,21 @@ async function manejarAutocompletado(interaction) {
   const buscado = normalizar(foco.value);
   let opciones = [];
 
-  if (foco.name === 'equipo') {
+  if (foco.name === 'campeones') {
+    await cargarDatosEstaticos();
+    const partes = foco.value.split(',');
+    const ultimo = normalizar(partes.pop() ?? '');
+    const previos = partes.map((p) => p.trim()).filter(Boolean);
+    const elegidos = new Set(previos.map((p) => buscarCampeon(p)?.id).filter(Boolean));
+    const prefijo = previos.length ? `${previos.join(', ')}, ` : '';
+    opciones = [...estatico.campeones.entries()]
+      .filter(([id, nombre]) => !elegidos.has(id) && normalizar(nombre).includes(ultimo))
+      .sort(([, a], [, b]) => Number(!normalizar(b).startsWith(ultimo)) - Number(!normalizar(a).startsWith(ultimo)) || a.localeCompare(b, 'es'))
+      .map(([, nombre]) => `${prefijo}${nombre}`)
+      .filter((valor) => valor.length <= 100) // límite de Discord para cada sugerencia
+      .map((valor) => ({ name: valor, value: valor }));
+    if (!opciones.length && foco.value.trim()) opciones = [{ name: foco.value.slice(0, 100), value: foco.value.slice(0, 100) }];
+  } else if (foco.name === 'equipo') {
     const equipos = await equiposCol.find({ guildId: interaction.guildId }).toArray();
     opciones = equipos
       .filter((e) => normalizar(e.nombre).includes(buscado))
